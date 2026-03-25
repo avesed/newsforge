@@ -1,0 +1,21 @@
+# Development overrides — run with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Only starts postgres + redis; backend and frontend run locally.
+# Optionally start rsshub with: --profile rsshub
+
+services:
+  app:
+    profiles: ["production"]  # Don't start in dev
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  rsshub:
+    ports:
+      - "1200:1200"

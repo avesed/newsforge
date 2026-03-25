@@ -1,0 +1,67 @@
+[project]
+name = "newsforge"
+version = "0.1.0"
+description = "NewsForge - Universal news aggregation and analysis platform"
+requires-python = ">=3.11"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "uvloop>=0.21.0",
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "pgvector>=0.3.6",
+    "alembic>=1.14.0",
+    # Redis
+    "redis>=5.2.0",
+    # LLM
+    "openai>=1.57.0",
+    "tiktoken>=0.8.0",
+    "langgraph>=0.2.0",
+    "langchain-openai>=0.3.0",
+    "langchain-text-splitters>=0.3.0",
+    # RSS & Content
+    "feedparser>=6.0.11",
+    "crawl4ai>=0.4.0",
+    "httpx>=0.28.0",
+    # NLP & Dedup
+    "simhash>=2.1.2",
+    "datasketch>=1.6.0",
+    "lingua-language-detector>=2.0.2",
+    # Auth
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.0,<4.1.0",
+    # Scheduler
+    "apscheduler>=3.10.4",
+    # HTML parsing (Google News URL decode)
+    "selectolax>=0.3.21",
+    # Utils
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "python-multipart>=0.0.12",
+    "orjson>=3.10.0",
+    "pyyaml>=6.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+]
+playwright = [
+    "playwright>=1.49.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -1,0 +1,177 @@
+# NewsForge Pipeline Configuration
+# Controls processing depth per category + dynamic agent triggers
+
+# LLM provider settings
+llm:
+  # Default provider for all pipeline operations
+  default_provider: openai
+  default_model: gpt-4o-mini
+
+  # Per-purpose model overrides (optional)
+  # classifier_model: gpt-4o-mini    # Article classification
+  # summarizer_model: gpt-4o-mini    # Summarization agents
+  # sentiment_model: gpt-4o-mini     # Sentiment analysis
+  # entity_extraction_model: gpt-4o-mini  # Entity extraction
+  # scorer_model: gpt-4o-mini        # Impact scoring
+  # tagger_model: gpt-4o-mini        # Tagging
+  # analyzer_model: gpt-4o           # Deep analysis / domain-specific
+  # embedding_model: text-embedding-3-small
+
+# Dynamic agent trigger configuration
+agent_triggers:
+  # Always run for high-value articles (unified agents handle all categories)
+  always:
+    - summarizer
+    - sentiment
+    - entity
+    - tagger
+
+  # Category-specific agents (only domain-specific + scorer)
+  category_triggered:
+    finance:
+      - impact_scorer
+    tech:
+      - tech_trend
+      - impact_scorer
+    politics:
+      - politics_impact
+      - impact_scorer
+    world:
+      - impact_scorer
+    entertainment: []
+    gaming: []
+    sports: []
+    science: []
+    health: []
+    other: []
+
+  # Condition-based triggers (evaluated at runtime)
+  condition_triggered:
+    - agents:
+        - embedder
+      condition: "value_score >= 30"  # All medium+ articles get embedded
+
+# Routing rules — value-based processing tiers
+routing_rules:
+  high_value_threshold: 60       # >= 60: full agent pipeline
+  medium_value_threshold: 30     # 30-59: limited agents
+  market_impact_upgrades_to_high: true  # has_market_impact forces high-value path
+  medium_value_agents:           # Agents for medium-value articles
+    - summarizer
+    - sentiment
+
+# Per-category pipeline depth (legacy — still used for content fetch decisions)
+categories:
+  finance:
+    enable_scoring: true
+    scoring_threshold: 105
+    enable_content_fetch: true
+    enable_deep_analysis: true
+    enable_entity_extraction: true
+    entity_types: [stock, index, macro, person, org]
+    enable_sentiment: true
+    enable_embedding: true
+
+  tech:
+    enable_scoring: true
+    scoring_threshold: 105
+    enable_content_fetch: true
+    enable_deep_analysis: true
+    enable_entity_extraction: true
+    entity_types: [person, org, product]
+    enable_sentiment: true
+    enable_embedding: true
+
+  politics:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: true
+    entity_types: [person, org, location]
+    enable_sentiment: true
+    enable_embedding: false
+
+  entertainment:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: true
+    entity_types: [person, org, product]
+    enable_sentiment: true
+    enable_embedding: false
+
+  gaming:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: true
+    entity_types: [product, org]
+    enable_sentiment: true
+    enable_embedding: false
+
+  sports:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: true
+    entity_types: [person, org]
+    enable_sentiment: true
+    enable_embedding: false
+
+  world:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: true
+    entity_types: [person, org, location]
+    enable_sentiment: true
+    enable_embedding: false
+
+  science:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: false
+    enable_sentiment: false
+    enable_embedding: false
+
+  health:
+    enable_scoring: false
+    enable_content_fetch: true
+    enable_deep_analysis: false
+    enable_entity_extraction: false
+    enable_sentiment: false
+    enable_embedding: false
+
+  other:
+    enable_scoring: false
+    enable_content_fetch: false
+    enable_deep_analysis: false
+    enable_entity_extraction: false
+    enable_sentiment: false
+    enable_embedding: false
+
+# Scheduling
+scheduler:
+  feed_poll_interval_seconds: 300    # 5 min default
+  cleanup_interval_hours: 24
+  article_retention_days: 30
+  pipeline_event_retention_days: 7
+
+# Consumer
+consumer:
+  concurrency: 10
+  per_article_timeout_seconds: 600
+  max_retries: 3
+  retry_backoff_base_seconds: 30
+  max_articles_before_restart: 5000
+  max_uptime_seconds: 86400
+  circuit_breaker_failure_threshold: 5    # consecutive failures to trip
+  circuit_breaker_recovery_timeout: 60    # seconds before probing
+
+# Dedup
+dedup:
+  url_normalize: true
+  simhash_threshold: 3          # Hamming distance
+  title_similarity_threshold: 0.85
+  dedup_window_hours: 24
