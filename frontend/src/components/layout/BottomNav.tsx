@@ -37,9 +37,11 @@ export function BottomNav() {
     return location.pathname.startsWith(path);
   };
 
+  const activeIndex = NAV_ITEMS.findIndex((item) => isActive(item.path));
+
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur lg:hidden">
-      <div className="flex h-16 items-center justify-around px-2">
+      <div className="relative flex h-16 items-center justify-around px-2">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const active = isActive(item.path);
@@ -56,6 +58,15 @@ export function BottomNav() {
             </button>
           );
         })}
+        {activeIndex >= 0 && (
+          <span
+            className="absolute bottom-0 left-0 h-0.5 rounded-full bg-primary transition-transform duration-200"
+            style={{
+              width: `${100 / NAV_ITEMS.length}%`,
+              transform: `translateX(${activeIndex * 100}%)`,
+            }}
+          />
+        )}
       </div>
     </nav>
   );

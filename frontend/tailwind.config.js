@@ -50,6 +50,20 @@ export default {
           negative: "#ef4444",
         },
       },
+      keyframes: {
+        'toast-slide-in': {
+          from: { transform: 'translateX(100%)', opacity: '0' },
+          to: { transform: 'translateX(0)', opacity: '1' },
+        },
+        'toast-slide-out': {
+          from: { transform: 'translateX(0)', opacity: '1' },
+          to: { transform: 'translateX(100%)', opacity: '0' },
+        },
+      },
+      animation: {
+        'toast-in': 'toast-slide-in 200ms ease-out',
+        'toast-out': 'toast-slide-out 150ms ease-in forwards',
+      },
     },
   },
   plugins: [],

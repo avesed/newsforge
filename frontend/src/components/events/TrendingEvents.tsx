@@ -5,6 +5,7 @@ import { Flame, Newspaper, TrendingUp, TrendingDown, Minus } from "lucide-react"
 import { getTrendingEvents } from "@/api/events";
 import type { NewsEvent } from "@/api/events";
 import { CategoryTag } from "@/components/category/CategoryTag";
+import { TrendingEventsSkeleton } from "./EventItemSkeleton";
 
 function SentimentIndicator({ value }: { value: number | null }) {
   if (value == null) return null;
@@ -66,11 +67,15 @@ function EventItem({ event }: { event: NewsEvent }) {
 export function TrendingEvents() {
   const { t } = useTranslation();
 
-  const { data: events } = useQuery({
+  const { data: events, isLoading } = useQuery({
     queryKey: ["trendingEvents"],
     queryFn: () => getTrendingEvents(),
     staleTime: 2 * 60 * 1000,
   });
+
+  if (isLoading) {
+    return <TrendingEventsSkeleton />;
+  }
 
   if (!events || events.length === 0) {
     return null;

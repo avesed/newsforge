@@ -1,15 +1,39 @@
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Search, Sun, Moon, LogIn, LogOut, User, Settings, Shield, History } from "lucide-react";
+import { Search, Sun, Moon, LogIn, LogOut, Settings, Shield, History } from "lucide-react";
 import { useThemeStore } from "@/stores/themeStore";
 import { useAuthStore } from "@/stores/authStore";
+import { cn } from "@/lib/utils";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+
+const AVATAR_COLORS = [
+  "#10b981", "#3b82f6", "#ef4444", "#f59e0b", "#8b5cf6",
+  "#06b6d4", "#6366f1", "#14b8a6", "#ec4899", "#f97316",
+];
+
+function getUserColor(name: string): string {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length] ?? "#6b7280";
+}
 
 export function Header() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { theme, toggle: toggleTheme } = useThemeStore();
   const { user, logout } = useAuthStore();
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrolled(window.scrollY > 0);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
   const handleLogout = async () => {
     await logout();
@@ -23,7 +47,7 @@ export function Header() {
   };
 
   return (
-    <header className="sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur">
+    <header className={cn("sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur transition-shadow", scrolled && "shadow-sm")}>
       <div className="mx-auto max-w-6xl px-4">
         {/* Top bar */}
         <div className="flex h-14 items-center justify-between">
@@ -59,7 +83,12 @@ export function Header() {
               <DropdownMenu.Root>
                 <DropdownMenu.Trigger asChild>
                   <button className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent">
-                    <User className="h-4 w-4" />
+                    <span
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold text-white"
+                      style={{ backgroundColor: getUserColor(user.displayName) }}
+                    >
+                      {user.displayName.charAt(0).toUpperCase()}
+                    </span>
                     <span className="hidden sm:inline">{user.displayName}</span>
                   </button>
                 </DropdownMenu.Trigger>

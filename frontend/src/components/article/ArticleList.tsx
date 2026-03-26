@@ -1,9 +1,11 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Loader2 } from "lucide-react";
+import { Loader2, Newspaper } from "lucide-react";
 import { getArticles } from "@/api/articles";
 import { ArticleCard } from "./ArticleCard";
+import { ArticleListSkeleton } from "./ArticleCardSkeleton";
+import { EmptyState } from "@/components/EmptyState";
 import { useReadHistory } from "@/hooks/useReadHistory";
 
 interface ArticleListProps {
@@ -32,6 +34,10 @@ export function ArticleList({ category }: ArticleListProps) {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Must be before any early returns to satisfy Rules of Hooks
+  const firstPageSize = data?.pages[0]?.articles.length ?? 0;
+  const animateUpTo = useMemo(() => firstPageSize, [firstPageSize]);
+
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
       const first = entries[0];
@@ -53,12 +59,7 @@ export function ArticleList({ category }: ArticleListProps) {
   }, [handleObserver]);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">{t("common.loading")}</span>
-      </div>
-    );
+    return <ArticleListSkeleton />;
   }
 
   if (isError) {
@@ -79,16 +80,24 @@ export function ArticleList({ category }: ArticleListProps) {
 
   if (articles.length === 0) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <p className="text-muted-foreground">{t("article.noArticles")}</p>
-      </div>
+      <EmptyState
+        icon={Newspaper}
+        title={t("article.noArticles")}
+        description={t("article.noArticlesHint")}
+      />
     );
   }
 
   return (
     <div className="flex flex-col">
-      {articles.map((article) => (
-        <ArticleCard key={article.id} article={article} isRead={isRead(article.id)} />
+      {articles.map((article, index) => (
+        <div
+          key={article.id}
+          className={index < animateUpTo ? "animate-stagger-item" : undefined}
+          style={index < animateUpTo ? { animationDelay: `${Math.min(index * 50, 500)}ms` } : undefined}
+        >
+          <ArticleCard article={article} isRead={isRead(article.id)} />
+        </div>
       ))}
       <div ref={loadMoreRef} className="py-4 text-center">
         {isFetchingNextPage && (

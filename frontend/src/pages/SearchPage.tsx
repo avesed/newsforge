@@ -9,6 +9,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   Search,
+  SearchX,
   Loader2,
   SlidersHorizontal,
   ChevronDown,
@@ -28,10 +29,14 @@ import {
   type SearchParams,
 } from "@/api/search";
 import { getErrorMessage } from "@/api/client";
+import { EmptyState } from "@/components/EmptyState";
 import { ArticleCard } from "@/components/article/ArticleCard";
+import { toast } from "@/stores/toastStore";
 import { useReadHistory } from "@/hooks/useReadHistory";
-import { ALL_CATEGORIES } from "@/types";
-import type { ExternalSearchResult } from "@/types";
+import { ALL_CATEGORIES, CATEGORY_COLORS } from "@/types";
+import type { ExternalSearchResult, CategorySlug } from "@/types";
+import { cn } from "@/lib/utils";
+import { useSearchHistory } from "@/hooks/useSearchHistory";
 
 type SortOption = "relevance" | "date" | "value_score";
 
@@ -204,8 +209,9 @@ export default function SearchPage() {
   // Import state
   const [importingUrls, setImportingUrls] = useState<Set<string>>(new Set());
   const [importedUrls, setImportedUrls] = useState<Set<string>>(new Set());
-  const [importError, setImportError] = useState<string | null>(null);
   const { isRead } = useReadHistory();
+  const { history, addSearch, removeSearch, clearHistory } = useSearchHistory();
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   // Debounce for autocomplete
   useEffect(() => {
@@ -306,7 +312,9 @@ export default function SearchPage() {
     const trimmed = query.trim();
     if (trimmed.length > 0) {
       setSearchTerm(trimmed);
+      addSearch(trimmed);
       setSuggestionsOpen(false);
+      setHistoryOpen(false);
       syncUrlParams(trimmed);
     }
   };
@@ -348,13 +356,14 @@ export default function SearchPage() {
   };
 
   const handleImport = async (url: string) => {
-    setImportError(null);
     setImportingUrls((prev) => new Set(prev).add(url));
     try {
       await importExternalArticles([url]);
       setImportedUrls((prev) => new Set(prev).add(url));
+      toast({ variant: "success", title: t("search.imported") });
     } catch (err) {
-      setImportError(getErrorMessage(err));
+      const message = getErrorMessage(err);
+      toast({ variant: "error", title: t("search.importFailed"), description: message });
     } finally {
       setImportingUrls((prev) => {
         const next = new Set(prev);
@@ -385,16 +394,30 @@ export default function SearchPage() {
             type="text"
             value={query}
             onChange={(e) => {
-              setQuery(e.target.value);
-              setSuggestionsOpen(true);
+              const val = e.target.value;
+              setQuery(val);
+              if (val.trim().length >= 2) {
+                setSuggestionsOpen(true);
+                setHistoryOpen(false);
+              } else {
+                setSuggestionsOpen(false);
+                setHistoryOpen(val.trim().length === 0 && history.length > 0);
+              }
               setActiveSuggestionIndex(-1);
             }}
             onFocus={() => {
-              if (query.trim().length >= 2) setSuggestionsOpen(true);
+              if (query.trim().length >= 2) {
+                setSuggestionsOpen(true);
+              } else if (query.trim().length === 0 && history.length > 0) {
+                setHistoryOpen(true);
+              }
             }}
             onBlur={() => {
-              // Delay to allow click on suggestion
-              setTimeout(() => setSuggestionsOpen(false), 200);
+              // Delay to allow click on suggestion / history item
+              setTimeout(() => {
+                setSuggestionsOpen(false);
+                setHistoryOpen(false);
+              }, 200);
             }}
             onKeyDown={handleKeyDown}
             placeholder={t("search.placeholder")}
@@ -408,6 +431,56 @@ export default function SearchPage() {
             onSelect={handleSuggestionSelect}
             activeIndex={activeSuggestionIndex}
           />
+          {historyOpen && !suggestionsOpen && query.trim().length === 0 && history.length > 0 && (
+            <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-card shadow-lg">
+              <div className="flex items-center justify-between px-4 py-2 text-xs font-medium text-muted-foreground">
+                <span>{t("search.recentSearches")}</span>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    clearHistory();
+                    setHistoryOpen(false);
+                  }}
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                >
+                  {t("search.clearHistory")}
+                </button>
+              </div>
+              {history.map((term) => (
+                <div
+                  key={term}
+                  className="flex items-center justify-between px-4 py-2.5 hover:bg-accent"
+                >
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setQuery(term);
+                      setSearchTerm(term);
+                      addSearch(term);
+                      setHistoryOpen(false);
+                      syncUrlParams(term);
+                    }}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left text-sm text-foreground"
+                  >
+                    <Clock className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
+                    <span className="truncate">{term}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      removeSearch(term);
+                    }}
+                    className="ml-2 flex-shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
         <button
           type="submit"
@@ -430,7 +503,8 @@ export default function SearchPage() {
       </form>
 
       {/* Filters Panel */}
-      {filtersOpen && (
+      <div className="collapsible-panel" data-open={filtersOpen}>
+        <div>
         <div className="rounded-lg border border-border bg-card p-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-foreground">
@@ -454,18 +528,36 @@ export default function SearchPage() {
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 {t("search.category")}
               </label>
-              <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
-              >
-                <option value="">{t("search.allCategories")}</option>
-                {ALL_CATEGORIES.map((cat) => (
-                  <option key={cat.slug} value={cat.slug}>
-                    {i18n.language === "zh" ? cat.nameZh : cat.name}
-                  </option>
-                ))}
-              </select>
+              <div className="scrollbar-hide flex gap-1.5 overflow-x-auto pb-1">
+                <button
+                  type="button"
+                  onClick={() => setCategory("")}
+                  className={cn(
+                    "whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors",
+                    !category ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                  )}
+                >
+                  {t("search.allCategories")}
+                </button>
+                {ALL_CATEGORIES.map((cat) => {
+                  const isActive = category === cat.slug;
+                  const color = CATEGORY_COLORS[cat.slug as CategorySlug];
+                  return (
+                    <button
+                      key={cat.slug}
+                      type="button"
+                      onClick={() => setCategory(isActive ? "" : cat.slug)}
+                      className="whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium transition-colors"
+                      style={isActive
+                        ? { backgroundColor: color, color: "#fff" }
+                        : { backgroundColor: `${color}15`, color }
+                      }
+                    >
+                      {i18n.language === "zh" ? cat.nameZh : cat.name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             {/* Language */}
@@ -561,7 +653,8 @@ export default function SearchPage() {
             </div>
           </div>
         </div>
-      )}
+        </div>
+      </div>
 
       {/* Loading state */}
       {isSearching && (
@@ -578,22 +671,6 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Import error banner */}
-      {importError && (
-        <div className="flex items-center justify-between rounded-md border border-red-300 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-400">
-          <span>
-            {t("search.importFailed")}: {importError}
-          </span>
-          <button
-            type="button"
-            onClick={() => setImportError(null)}
-            className="ml-2 text-red-500 hover:text-red-700 dark:hover:text-red-300"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-      )}
-
       {/* Results metadata */}
       {hasSearched && !isSearching && firstPage && (
         <div className="text-sm text-muted-foreground">
@@ -604,9 +681,11 @@ export default function SearchPage() {
 
       {/* No results */}
       {hasSearched && !isSearching && !isSearchError && articles.length === 0 && (
-        <div className="py-12 text-center text-muted-foreground">
-          {t("search.noResults")}
-        </div>
+        <EmptyState
+          icon={SearchX}
+          title={t("search.noResults")}
+          description={t("search.noResultsHint")}
+        />
       )}
 
       {/* Internal results */}

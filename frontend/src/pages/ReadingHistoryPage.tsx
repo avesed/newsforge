@@ -4,6 +4,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { Loader2, History } from "lucide-react";
 import { getReadingHistory } from "@/api/readingHistory";
 import { ArticleCard } from "@/components/article/ArticleCard";
+import { EmptyState } from "@/components/EmptyState";
 
 export default function ReadingHistoryPage() {
   const { t } = useTranslation();
@@ -76,10 +77,11 @@ export default function ReadingHistoryPage() {
       )}
 
       {!isLoading && !isError && articles.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16">
-          <History className="mb-4 h-12 w-12 text-muted-foreground" />
-          <p className="text-muted-foreground">{t("history.empty")}</p>
-        </div>
+        <EmptyState
+          icon={History}
+          title={t("history.empty")}
+          description={t("history.emptyHint")}
+        />
       )}
 
       {articles.length > 0 && (

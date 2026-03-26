@@ -20,6 +20,7 @@ import { useReadHistory } from "@/hooks/useReadHistory";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
+import { ArticlePageSkeleton } from "./ArticlePageSkeleton";
 
 export default function ArticlePage() {
   const { id } = useParams<{ id: string }>();
@@ -125,6 +126,7 @@ export default function ArticlePage() {
                 cached?: boolean;
               };
 
+              if (controller.signal.aborted) break;
               if (event.type === "analysis_chunk" && event.content) {
                 fullContent += event.content;
                 setAnalysisContent(fullContent);
@@ -165,11 +167,7 @@ export default function ArticlePage() {
   }, []);
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <ArticlePageSkeleton />;
   }
 
   if (isError || !article) {
@@ -208,7 +206,7 @@ export default function ArticlePage() {
             className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            {locale === "zh" ? "查看原文" : "View Original"}
+            {t("article.viewOriginal", "View Original")}
           </a>
         )}
       </div>
@@ -368,14 +366,14 @@ export default function ArticlePage() {
             <div className="flex items-center justify-center py-12 gap-2">
               <Loader2 className="h-5 w-5 animate-spin text-primary" />
               <span className="text-sm text-muted-foreground">
-                {locale === "zh" ? "AI 正在分析..." : "AI analyzing..."}
+                {t("article.aiAnalyzing", "AI analyzing...")}
               </span>
             </div>
           ) : null}
           {analysisLoading && analysisContent && (
             <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
-              {locale === "zh" ? "生成中..." : "Generating..."}
+              {t("article.generating", "Generating...")}
             </div>
           )}
         </Tabs.Content>

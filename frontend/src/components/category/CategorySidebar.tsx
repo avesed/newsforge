@@ -21,7 +21,7 @@ export function CategorySidebar({ activeCategory, onSelect }: CategorySidebarPro
           <button
             onClick={() => onSelect(null)}
             className={cn(
-              "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150",
               activeCategory === null
                 ? "bg-primary/10 text-primary"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -43,7 +43,7 @@ export function CategorySidebar({ activeCategory, onSelect }: CategorySidebarPro
               <button
                 onClick={() => onSelect(cat.slug)}
                 className={cn(
-                  "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  "flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-all duration-150",
                   isActive
                     ? "bg-primary/10 text-primary"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground"
