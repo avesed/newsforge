@@ -312,6 +312,7 @@ def _to_response(article: Article, feed_title: str | None = None) -> ArticleResp
         content_status=article.content_status,
         processing_path=article.processing_path,
         agents_executed=article.agents_executed,
+        story_id=article.story_id,
         source_name=source_name,
         authors=article.authors if isinstance(article.authors, list) else None,
         top_image=article.top_image,

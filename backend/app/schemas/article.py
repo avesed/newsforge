@@ -48,6 +48,9 @@ class ArticleResponse(CamelModel):
     processing_path: str | None = None
     agents_executed: list[str] | None = None
 
+    # Story
+    story_id: UUID | None = None
+
     # Metadata
     source_name: str | None = None
     authors: list[str] | None = None

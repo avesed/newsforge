@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { Layout } from "@/components/layout/Layout";
+import { Toaster } from "@/components/ui/Toast";
 import { useAuthStore } from "@/stores/authStore";
 
 const HomePage = lazy(() => import("@/pages/HomePage"));
@@ -19,6 +20,7 @@ const AdminLLMPage = lazy(() => import("@/pages/admin/AdminLLMPage"));
 const AdminPipelinePage = lazy(() => import("@/pages/admin/AdminPipelinePage"));
 const ReadingHistoryPage = lazy(() => import("@/pages/ReadingHistoryPage"));
 const EventDetailPage = lazy(() => import("@/pages/EventDetailPage"));
+const StoryDetailPage = lazy(() => import("@/pages/StoryDetailPage"));
 
 function LoadingFallback() {
   return (
@@ -53,6 +55,7 @@ export default function App() {
             <Route path="/news/:category" element={<CategoryPage />} />
             <Route path="/article/:id" element={<ArticlePage />} />
             <Route path="/events/:id" element={<EventDetailPage />} />
+            <Route path="/stories/:id" element={<StoryDetailPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
@@ -123,6 +126,7 @@ export default function App() {
           </Route>
         </Routes>
       </Suspense>
+      <Toaster />
     </BrowserRouter>
   );
 }

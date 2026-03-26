@@ -346,6 +346,16 @@ class PipelineConsumer:
                     finance_meta["industry_tags"] = td["industry_tags"]
                 if td.get("event_tags"):
                     finance_meta["event_tags"] = td["event_tags"]
+                if td.get("story_hint"):
+                    update_values["story_hint"] = td["story_hint"]
+                    update_values["story_type"] = td.get("story_type")
+
+            # Extract story matcher results
+            story_result = agent_data.get("story_matcher", {})
+            if story_result.get("success"):
+                sd = story_result.get("data", {})
+                if sd.get("story_id"):
+                    update_values["story_id"] = sd["story_id"]
 
             # Extract stock symbols from entity results
             stock_entities = [e for e in all_entities if e.get("type") in ("stock", "index")]
@@ -456,9 +466,36 @@ class PipelineConsumer:
 
 
 async def run_consumer() -> None:
-    """Entry point for the consumer process."""
+    """Entry point for the consumer process.
+
+    Starts both the PipelineConsumer (article queue) and the AgentWorker
+    (unified agent queue) in the same event loop.
+    """
+    from app.pipeline.agent_worker import AgentWorker
+
     consumer = PipelineConsumer()
-    await consumer.run()
+    worker = AgentWorker()
+
+    # Run both concurrently — if either exits, both stop
+    done, pending = await asyncio.wait(
+        [
+            asyncio.create_task(consumer.run(), name="pipeline-consumer"),
+            asyncio.create_task(worker.run(), name="agent-worker"),
+        ],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+
+    # Cancel remaining tasks on exit
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    for task in done:
+        if task.exception():
+            logger.error("Task %s failed: %s", task.get_name(), task.exception())
 
 
 if __name__ == "__main__":

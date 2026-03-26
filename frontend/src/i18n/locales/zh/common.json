@@ -34,10 +34,14 @@
     "source": "\u6765\u6e90",
     "publishedAt": "\u53d1\u5e03\u65f6\u95f4",
     "noArticles": "\u6682\u65e0\u6587\u7ae0",
+    "noArticlesHint": "\u6587\u7ae0\u5904\u7406\u540e\u4f1a\u663e\u793a\u5728\u8fd9\u91cc",
     "loadMore": "\u52a0\u8f7d\u66f4\u591a",
     "loading": "\u52a0\u8f7d\u4e2d...",
     "fullText": "\u5168\u6587",
-    "fullTextEmpty": "\u6682\u65e0\u5168\u6587\u5185\u5bb9"
+    "fullTextEmpty": "\u6682\u65e0\u5168\u6587\u5185\u5bb9",
+    "viewOriginal": "\u67e5\u770b\u539f\u6587",
+    "aiAnalyzing": "AI \u6b63\u5728\u5206\u6790...",
+    "generating": "\u751f\u6210\u4e2d..."
   },
   "auth": {
     "email": "\u90ae\u7bb1",
@@ -55,6 +59,7 @@
   "search": {
     "placeholder": "\u641c\u7d22\u6587\u7ae0...",
     "noResults": "\u672a\u627e\u5230\u7ed3\u679c",
+    "noResultsHint": "\u6362\u4e2a\u5173\u952e\u8bcd\u6216\u8c03\u6574\u7b5b\u9009\u6761\u4ef6\u8bd5\u8bd5",
     "title": "\u641c\u7d22",
     "resultCount": "\u627e\u5230 {{count}} \u6761\u7ed3\u679c",
     "resultMeta": "({{mode}}, {{time}}ms)",
@@ -77,7 +82,9 @@
     "imported": "\u5bfc\u5165\u6210\u529f",
     "importFailed": "\u5bfc\u5165\u5931\u8d25",
     "searchExternal": "\u540c\u65f6\u641c\u7d22\u5916\u90e8\u6765\u6e90",
-    "noExternalResults": "\u65e0\u5916\u90e8\u7ed3\u679c"
+    "noExternalResults": "\u65e0\u5916\u90e8\u7ed3\u679c",
+    "recentSearches": "\u6700\u8fd1\u641c\u7d22",
+    "clearHistory": "\u6e05\u9664"
   },
   "feeds": {
     "title": "\u6211\u7684\u8ba2\u9605\u6e90",
@@ -92,11 +99,13 @@
   },
   "bookmarks": {
     "title": "\u6536\u85cf",
-    "empty": "\u6682\u65e0\u6536\u85cf"
+    "empty": "\u6682\u65e0\u6536\u85cf",
+    "emptyHint": "\u6536\u85cf\u6587\u7ae0\u4ee5\u4fbf\u7a0d\u540e\u9605\u8bfb"
   },
   "history": {
     "title": "\u9605\u8bfb\u5386\u53f2",
-    "empty": "\u6682\u65e0\u9605\u8bfb\u8bb0\u5f55"
+    "empty": "\u6682\u65e0\u9605\u8bfb\u8bb0\u5f55",
+    "emptyHint": "\u9605\u8bfb\u8fc7\u7684\u6587\u7ae0\u4f1a\u663e\u793a\u5728\u8fd9\u91cc"
   },
   "settings": {
     "title": "\u8bbe\u7f6e",
@@ -282,6 +291,21 @@
     "detail": "\u4e8b\u4ef6\u8be6\u60c5",
     "articles": "\u76f8\u5173\u62a5\u9053"
   },
+  "stories": {
+    "trending": "\u70ed\u95e8\u6545\u4e8b\u7ebf",
+    "articles": "\u76f8\u5173\u62a5\u9053",
+    "detail": "\u6545\u4e8b\u7ebf\u8be6\u60c5",
+    "timeline": "\u65f6\u95f4\u7ebf",
+    "sources": "\u4e2a\u6765\u6e90",
+    "status": {
+      "developing": "\u53d1\u5c55\u4e2d",
+      "ongoing": "\u6301\u7eed\u4e2d",
+      "concluded": "\u5df2\u7ed3\u675f"
+    },
+    "storyType": "\u7c7b\u578b",
+    "keyEntities": "\u6838\u5fc3\u5b9e\u4f53",
+    "badge": "\u6545\u4e8b\u7ebf"
+  },
   "articles": {
     "related": "\u76f8\u5173\u6587\u7ae0"
   },
@@ -289,6 +313,14 @@
     "positive": "\u79ef\u6781",
     "neutral": "\u4e2d\u6027",
     "negative": "\u6d88\u6781"
+  },
+  "toast": {
+    "success": "成功",
+    "error": "错误",
+    "networkError": "网络错误，请重试",
+    "copySuccess": "链接已复制",
+    "bookmarkAdded": "已添加收藏",
+    "bookmarkRemoved": "已取消收藏"
   },
   "common": {
     "loading": "\u52a0\u8f7d\u4e2d...",

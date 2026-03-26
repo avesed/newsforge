@@ -42,6 +42,7 @@ export interface Article {
   primaryEntityType: string | null;
   processingPath: string | null;
   agentsExecuted: string[] | null;
+  storyId: string | null;
   publishedAt: string;
   createdAt: string;
 }

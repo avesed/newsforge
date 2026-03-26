@@ -227,7 +227,6 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     """
     from app.pipeline.classifier import classify_articles
     from app.content.fetcher import fetch_content
-    from app.pipeline.agents.base import AgentContext, AgentResult
     from app.pipeline.agents.registry import get_agent_registry
     from app.pipeline.events import record_event
 
@@ -399,7 +398,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if not checkpoint or "cleaned_text" not in (checkpoint or {}):
         article_data["_checkpoint"]["cleaned_text"] = cleaned_text
 
-    # --- Phase 2+3: Dynamic agents ---
+    # --- Phase 2+3: Dynamic agents (via unified agent queue) ---
     await _report_progress("agents")
     registry = get_agent_registry()
     phase_agents = registry.resolve_agents(categories, value_score, has_market_impact)
@@ -409,129 +408,99 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
         results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
         return results
 
-    # Build agent context
-    context = AgentContext(
-        article_id=article_id,
-        title=title,
-        summary=summary,
-        full_text=cleaned_text if cleaned_text else (content.full_text if content else None),
-        language=content.language if content else rss_language,
-        categories=categories,
-        has_market_impact=has_market_impact,
-        value_score=value_score,
-        url=url,
-    )
-
-    # Restore completed agents from checkpoint
+    # Collect agent IDs to run, respecting checkpoint
     completed_from_checkpoint = (checkpoint or {}).get("completed_agents", {})
     failed_agent_ids = set((checkpoint or {}).get("failed_agents", []))
 
     if completed_from_checkpoint:
-        for agent_id, agent_data in completed_from_checkpoint.items():
-            result_obj = AgentResult(
-                agent_id=agent_id,
-                success=agent_data.get("success", False),
-                data=agent_data.get("data", {}),
-                duration_ms=agent_data.get("duration_ms", 0),
-                tokens_used=agent_data.get("tokens_used", 0),
-            )
-            context.agent_results[agent_id] = result_obj
-            results["agents"][agent_id] = agent_data
+        for aid, adata in completed_from_checkpoint.items():
+            results["agents"][aid] = adata
         logger.info(
             "Restored %d agent results from checkpoint: %s",
             len(completed_from_checkpoint), list(completed_from_checkpoint.keys()),
         )
 
-    # Execute agents phase by phase
+    agent_ids_to_run: list[str] = []
     for phase_num in sorted(phase_agents.keys()):
-        agents = phase_agents[phase_num]
-
-        # Filter out agents already completed from checkpoint
-        agents_to_run = []
-        for agent in agents:
+        for agent in phase_agents[phase_num]:
             if agent.agent_id in completed_from_checkpoint and agent.agent_id not in failed_agent_ids:
-                continue  # Already completed successfully
-            # Re-run if agent itself failed OR any of its dependencies failed
-            dep_needs_rerun = any(dep in failed_agent_ids for dep in agent.requires)
-            if agent.agent_id not in failed_agent_ids and not dep_needs_rerun and agent.agent_id in completed_from_checkpoint:
-                continue
-            agents_to_run.append(agent)
+                dep_needs_rerun = any(dep in failed_agent_ids for dep in agent.requires)
+                if not dep_needs_rerun:
+                    continue
+            agent_ids_to_run.append(agent.agent_id)
 
-        skipped = len(agents) - len(agents_to_run)
-        if skipped > 0:
-            skipped_ids = [a.agent_id for a in agents if a not in agents_to_run]
-            logger.info("Skipping %d agents from checkpoint: %s", skipped, skipped_ids)
+    if not agent_ids_to_run:
+        logger.info("All agents already completed from checkpoint")
+        results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
+        return results
 
-        if not agents_to_run:
-            continue
+    # Build serializable context for the agent worker
+    full_text = cleaned_text if cleaned_text else (content.full_text if content else None)
+    context_data = {
+        "article_id": article_id,
+        "title": title,
+        "summary": summary,
+        "full_text": full_text,
+        "language": content.language if content else rss_language,
+        "categories": categories,
+        "has_market_impact": has_market_impact,
+        "value_score": value_score,
+        "url": url,
+    }
 
-        # Split agents into groups: those with satisfied deps vs not
-        ready, waiting = _split_by_deps(agents_to_run, context.agent_results)
+    # Submit agent group to unified queue
+    from app.pipeline import agent_queue as aq
 
-        # Run ready agents in parallel
-        if ready:
-            agent_results = await asyncio.gather(
-                *[a.safe_execute(context) for a in ready],
-                return_exceptions=False,
-            )
-            for result in agent_results:
-                context.agent_results[result.agent_id] = result
-                results["agents"][result.agent_id] = _serialize_agent_result(result)
-                await record_event(
-                    article_id, f"agent:{result.agent_id}",
-                    "success" if result.success else "error",
-                    duration_ms=result.duration_ms,
-                    metadata={"tokens": result.tokens_used},
-                    error=result.error,
-                )
-                # Save agent result to checkpoint
-                article_data["_checkpoint"].setdefault("completed_agents", {})
-                if result.success:
-                    article_data["_checkpoint"]["completed_agents"][result.agent_id] = _serialize_agent_result(result)
-                else:
-                    article_data["_checkpoint"].setdefault("failed_agents", [])
-                    if result.agent_id not in article_data["_checkpoint"]["failed_agents"]:
-                        article_data["_checkpoint"]["failed_agents"].append(result.agent_id)
+    redis = await get_redis()
 
-        # Run waiting agents sequentially (their deps should now be satisfied)
-        for agent in waiting:
-            # Check if any required dependency failed
-            failed_deps = [
-                dep for dep in agent.requires
-                if dep in context.agent_results and not context.agent_results[dep].success
-            ]
-            if failed_deps:
-                logger.warning(
-                    "Agent %s running with failed dependencies: %s",
-                    agent.agent_id, failed_deps,
-                )
-            result = await agent.safe_execute(context)
-            context.agent_results[result.agent_id] = result
-            results["agents"][result.agent_id] = _serialize_agent_result(result)
-            await record_event(
-                article_id, f"agent:{result.agent_id}",
-                "success" if result.success else "error",
-                duration_ms=result.duration_ms,
-                metadata={"tokens": result.tokens_used},
-                error=result.error,
-            )
-            # Save agent result to checkpoint
-            article_data["_checkpoint"].setdefault("completed_agents", {})
-            if result.success:
-                article_data["_checkpoint"]["completed_agents"][result.agent_id] = _serialize_agent_result(result)
-            else:
-                article_data["_checkpoint"].setdefault("failed_agents", [])
-                if result.agent_id not in article_data["_checkpoint"]["failed_agents"]:
-                    article_data["_checkpoint"]["failed_agents"].append(result.agent_id)
+    group_id, result_key = await aq.submit_agent_group(
+        redis,
+        group_type="article",
+        context_data=context_data,
+        agents=agent_ids_to_run,
+        prior_results=completed_from_checkpoint,
+    )
+
+    logger.info(
+        "Agent group submitted: %s agents=%s (group=%s)",
+        title[:50], agent_ids_to_run, group_id[:8],
+    )
+
+    # Wait for results — worker owns the timeout and always posts a result
+    # (either success or {"_error": "timeout"}), so we just wait.
+    agent_results = await aq.wait_results(redis, result_key)
+
+    if agent_results is None:
+        raise RuntimeError(
+            f"Agent worker did not respond for article: {title[:80]}"
+        )
+
+    if "_error" in agent_results:
+        raise RuntimeError(
+            f"Agent worker error ({agent_results['_error']}) for article: {title[:80]}"
+        )
+
+    # Merge results back
+    for aid, result_data in agent_results.items():
+        results["agents"][aid] = result_data
+        # Update checkpoint
+        article_data["_checkpoint"].setdefault("completed_agents", {})
+        if result_data.get("success"):
+            article_data["_checkpoint"]["completed_agents"][aid] = result_data
+        else:
+            article_data["_checkpoint"].setdefault("failed_agents", [])
+            if aid not in article_data["_checkpoint"]["failed_agents"]:
+                article_data["_checkpoint"]["failed_agents"].append(aid)
 
     total_duration = (time.monotonic() - pipeline_start) * 1000
     results["pipeline_duration_ms"] = total_duration
 
     total_tokens = sum(
-        r.tokens_used for r in context.agent_results.values() if r.success
+        r.get("tokens_used", 0) for r in agent_results.values()
+        if isinstance(r, dict) and r.get("success")
     )
-    successful = sum(1 for r in context.agent_results.values() if r.success)
-    failed = sum(1 for r in context.agent_results.values() if not r.success)
+    successful = sum(1 for r in agent_results.values() if isinstance(r, dict) and r.get("success"))
+    failed = sum(1 for r in agent_results.values() if isinstance(r, dict) and not r.get("success"))
 
     logger.info(
         "Pipeline complete: %s | %d agents (%d ok, %d fail) | %d tokens | %.0fms",
@@ -541,32 +510,6 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     await _report_progress("complete")
 
     return results
-
-
-def _split_by_deps(
-    agents: list,
-    completed: dict,
-) -> tuple[list, list]:
-    """Split agents into ready (deps satisfied) and waiting."""
-    ready = []
-    waiting = []
-    for agent in agents:
-        if all(dep in completed for dep in agent.requires):
-            ready.append(agent)
-        else:
-            waiting.append(agent)
-    return ready, waiting
-
-
-def _serialize_agent_result(result) -> dict[str, Any]:
-    """Serialize an AgentResult for storage."""
-    return {
-        "success": result.success,
-        "duration_ms": round(result.duration_ms, 1),
-        "tokens_used": result.tokens_used,
-        "error": result.error,
-        "data": result.data,
-    }
 
 
 async def run_event_checker() -> None:
@@ -641,6 +584,20 @@ def create_scheduler() -> AsyncIOScheduler:
         hours=6,
         id="deactivate_stale_events",
         name="Deactivate stale events",
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # Deactivate stale stories (every 6 hours)
+    from app.services.story_service import deactivate_stale_stories
+
+    scheduler.add_job(
+        deactivate_stale_stories,
+        "interval",
+        hours=6,
+        id="deactivate_stale_stories",
+        name="Deactivate stale stories",
         misfire_grace_time=600,
         coalesce=True,
         max_instances=1,

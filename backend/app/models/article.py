@@ -55,6 +55,13 @@ class Article(Base):
     # Tags (from classifier)
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(String(50)))
 
+    # Story tracking (from tagger agent)
+    story_hint: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    story_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    story_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("news_stories.id", ondelete="SET NULL"), index=True, nullable=True
+    )
+
     # === Value & Market Impact (from classifier, replaces L1 3-agent scoring) ===
     value_score: Mapped[int | None] = mapped_column(Integer)  # 0-100, information value
     value_reason: Mapped[str | None] = mapped_column(String(200))

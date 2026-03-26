@@ -50,6 +50,9 @@ agent_triggers:
     - agents:
         - embedder
       condition: "value_score >= 30"  # All medium+ articles get embedded
+    - agents:
+        - story_matcher
+      condition: "value_score >= 30"
 
 # Routing rules — value-based processing tiers
 routing_rules:
@@ -158,10 +161,16 @@ scheduler:
   article_retention_days: 30
   pipeline_event_retention_days: 7
 
+# Agent Worker — unified agent queue (all LLM agent calls go through this)
+agent_worker:
+  concurrency: 6                      # max parallel agent groups
+  per_group_timeout_seconds: 600      # timeout per agent group
+  queue_key: "nf:agent:queue"
+
 # Consumer
 consumer:
   concurrency: 10
-  per_article_timeout_seconds: 600
+  per_article_timeout_seconds: 900
   max_retries: 3
   retry_backoff_base_seconds: 30
   max_articles_before_restart: 5000

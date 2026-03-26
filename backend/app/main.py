@@ -82,6 +82,10 @@ def create_app() -> FastAPI:
 
     app.include_router(events_router.router, prefix="/api/v1")
 
+    from app.api.v1 import stories as stories_router
+
+    app.include_router(stories_router.router, prefix="/api/v1")
+
     from app.api.v1 import reading_history as reading_history_router
 
     app.include_router(reading_history_router.router, prefix="/api/v1")

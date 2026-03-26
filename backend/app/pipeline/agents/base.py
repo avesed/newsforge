@@ -192,6 +192,20 @@ class AgentDefinition:
             f"\n正文:\n{body}"
         )
 
+    def _build_system_with_article(self, context: AgentContext) -> str:
+        """Build system prompt with article block appended.
+
+        By putting the article in the system message, the entire
+        [system_prompt + article] prefix is byte-identical across all
+        agents for the same article. This maximizes LLM prefix cache
+        hits when agents execute sequentially.
+
+        The user message then contains ONLY the task-specific prompt,
+        which is the only part that differs between agents.
+        """
+        article_block = self._build_article_block(context)
+        return f"{SHARED_SYSTEM_PROMPT}\n\n---\n\n{article_block}"
+
     async def _cached_json_call(
         self,
         llm: LLMGateway,
@@ -203,16 +217,15 @@ class AgentDefinition:
     ) -> tuple[dict, int]:
         """Prefix-cache-optimized LLM call expecting JSON response.
 
-        Uses SHARED_SYSTEM_PROMPT + standardized article block so the
-        provider can cache the common prefix across agents.
+        System message = shared prompt + article (identical across agents).
+        User message = task-specific prompt only (differs per agent).
 
         Returns (parsed_dict, total_tokens). Raises on failure.
         """
-        user_content = f"{self._build_article_block(context)}\n\n---\n\n{task_prompt}"
         request = ChatRequest(
             messages=[
-                ChatMessage(role="system", content=SHARED_SYSTEM_PROMPT),
-                ChatMessage(role="user", content=user_content),
+                ChatMessage(role="system", content=self._build_system_with_article(context)),
+                ChatMessage(role="user", content=task_prompt),
             ],
             temperature=temperature,
             max_tokens=max_tokens,
@@ -240,16 +253,14 @@ class AgentDefinition:
     ) -> tuple[str, int]:
         """Prefix-cache-optimized LLM call expecting text response.
 
-        Uses SHARED_SYSTEM_PROMPT + standardized article block so the
-        provider can cache the common prefix across agents.
+        Same prefix-cache strategy as _cached_json_call.
 
         Returns (text_content, total_tokens).
         """
-        user_content = f"{self._build_article_block(context)}\n\n---\n\n{task_prompt}"
         request = ChatRequest(
             messages=[
-                ChatMessage(role="system", content=SHARED_SYSTEM_PROMPT),
-                ChatMessage(role="user", content=user_content),
+                ChatMessage(role="system", content=self._build_system_with_article(context)),
+                ChatMessage(role="user", content=task_prompt),
             ],
             temperature=temperature,
             max_tokens=max_tokens,
