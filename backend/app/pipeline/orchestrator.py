@@ -603,6 +603,20 @@ def create_scheduler() -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # Merge duplicate stories (every 6 hours)
+    from app.services.story_service import merge_similar_stories
+
+    scheduler.add_job(
+        merge_similar_stories,
+        "interval",
+        hours=6,
+        id="merge_stories",
+        name="Merge duplicate stories",
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     return scheduler
 
 

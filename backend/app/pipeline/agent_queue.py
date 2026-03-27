@@ -24,10 +24,11 @@ AGENT_QUEUE_CONCURRENCY = "nf:agent:concurrency"
 
 async def submit_agent_group(
     redis: aioredis.Redis,
-    group_type: str,  # "article" or "system"
+    group_type: str,  # "article", "story", or "system"
     context_data: dict,
     agents: list[str],
     prior_results: dict | None = None,
+    display_info: dict | None = None,
 ) -> tuple[str, str]:
     """Submit an agent group to the unified queue.
 
@@ -42,6 +43,7 @@ async def submit_agent_group(
         "context_data": context_data,
         "agents": agents,
         "prior_results": prior_results or {},
+        "display_info": display_info or {},
         "result_key": result_key,
         "submitted_at": time.time(),
     }
@@ -120,3 +122,35 @@ async def update_health(redis: aioredis.Redis, **kwargs) -> None:
 async def increment_metrics(redis: aioredis.Redis, field: str, amount: int = 1) -> None:
     """Increment an agent metrics counter."""
     await redis.hincrby(AGENT_QUEUE_METRICS, field, amount)
+
+
+async def peek_queue(redis: aioredis.Redis, limit: int = 20) -> list[dict]:
+    """Peek at the queue without consuming. Returns display info for each group."""
+    raw_items = await redis.lrange(AGENT_QUEUE, 0, limit - 1)
+    items = []
+    for raw in raw_items:
+        try:
+            payload = json.loads(raw)
+            group_type = payload.get("group_type", "article")
+            agents = payload.get("agents", [])
+
+            if group_type == "story":
+                display_info = payload.get("display_info", {})
+                label = display_info.get("label", "故事线归类")
+                items.append({
+                    "group_id": payload.get("group_id", ""),
+                    "group_type": "story",
+                    "label": label,
+                    "agents": agents,
+                })
+            else:
+                title = payload.get("context_data", {}).get("title", "")
+                items.append({
+                    "group_id": payload.get("group_id", ""),
+                    "group_type": "article",
+                    "label": title[:60] if title else "(unknown)",
+                    "agents": agents,
+                })
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return items

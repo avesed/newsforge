@@ -50,9 +50,6 @@ agent_triggers:
     - agents:
         - embedder
       condition: "value_score >= 30"  # All medium+ articles get embedded
-    - agents:
-        - story_matcher
-      condition: "value_score >= 30"
 
 # Routing rules — value-based processing tiers
 routing_rules:
@@ -175,6 +172,7 @@ consumer:
   retry_backoff_base_seconds: 30
   max_articles_before_restart: 5000
   max_uptime_seconds: 86400
+  story_batch_size: 8              # articles per story clustering batch
   circuit_breaker_failure_threshold: 5    # consecutive failures to trip
   circuit_breaker_recovery_timeout: 60    # seconds before probing
 

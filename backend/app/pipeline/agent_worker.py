@@ -149,8 +149,13 @@ class AgentWorker:
 
     async def _execute_group(self, redis, group: dict) -> dict:
         """Execute all agents in a group sequentially for prefix cache optimization."""
-        registry = get_agent_registry()
         group_type = group.get("group_type", "article")
+
+        # Story groups have their own execution path
+        if group_type == "story":
+            return await self._execute_story_group(group)
+
+        registry = get_agent_registry()
         context_data = group["context_data"]
         agent_ids = group["agents"]
         prior_results = group.get("prior_results", {})
@@ -296,6 +301,28 @@ class AgentWorker:
         )
 
         return results
+
+    async def _execute_story_group(self, group: dict) -> dict:
+        """Execute a story clustering group."""
+        from app.pipeline.agents.story_matcher import BatchStoryMatcher
+
+        article_ids = group.get("context_data", {}).get("article_ids", [])
+        if not article_ids:
+            logger.warning("Story group has no article_ids")
+            return {"story_matcher": {"success": False, "error": "no article_ids"}}
+
+        matcher = BatchStoryMatcher()
+        result = await matcher.execute(article_ids)
+
+        logger.info(
+            "Story group complete: %d articles | matched=%d created=%d skipped=%d",
+            len(article_ids),
+            result.get("matched", 0),
+            result.get("created", 0),
+            result.get("skipped", 0),
+        )
+
+        return {"story_matcher": result}
 
     async def _config_poller(self, redis) -> None:
         """Poll Redis for concurrency target changes."""

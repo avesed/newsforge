@@ -273,3 +273,51 @@ async def reset_circuit_breaker(admin: User = Depends(require_admin)):
     cb = CircuitBreaker(redis)
     await cb.reset()
     return {"state": "closed", "message": "Circuit breaker reset"}
+
+
+class StoryBatchSizeRequest(CamelModel):
+    batch_size: int
+
+
+@router.get("/story-batch-size")
+async def get_story_batch_size(admin: User = Depends(require_admin)):
+    """Get current story batch size setting."""
+    from app.core.config import load_pipeline_config
+
+    redis = await get_redis()
+    val = await redis.get("nf:pipeline:story_batch_size")
+    config = load_pipeline_config()
+    default = config.get("consumer", {}).get("story_batch_size", 8)
+
+    return {"current": int(val) if val else default, "default": default}
+
+
+@router.put("/story-batch-size")
+async def update_story_batch_size(
+    data: StoryBatchSizeRequest,
+    admin: User = Depends(require_admin),
+):
+    """Set story batch size (how many articles before triggering story clustering)."""
+    if data.batch_size < 1 or data.batch_size > 50:
+        raise HTTPException(status_code=400, detail="batch_size must be 1-50")
+
+    redis = await get_redis()
+    prev = await redis.get("nf:pipeline:story_batch_size")
+    await redis.set("nf:pipeline:story_batch_size", str(data.batch_size))
+
+    return {"batch_size": data.batch_size, "previous": int(prev) if prev else None}
+
+
+@router.get("/agent-queue")
+async def get_agent_queue(
+    limit: int = 20,
+    admin: User = Depends(require_admin),
+):
+    """Peek at the agent queue without consuming."""
+    from app.pipeline import agent_queue as aq
+
+    redis = await get_redis()
+    items = await aq.peek_queue(redis, limit=min(limit, 50))
+    queue_len = await aq.get_queue_length(redis)
+
+    return {"queue_length": queue_len, "items": items}

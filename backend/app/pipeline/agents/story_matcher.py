@@ -1,206 +1,211 @@
-"""Story matcher agent — links articles to narrative-level storylines.
+"""Batch story matcher — groups articles into narrative storylines.
 
-Phase 3 agent that runs after tagger (for story_hint) and embedder (for embedding).
-Most matches are DB-only (no LLM call). LLM is only used for:
-1. Gray-zone confirmation (vector similarity 0.65-0.75)
-2. Creating new stories (generating title + description)
+NOT an AgentDefinition (not per-article). Called by the agent worker
+when processing a story group (group_type="story").
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 
-from app.core.llm.gateway import LLMGateway
-from app.pipeline.agents.base import AgentContext, AgentDefinition, AgentResult
-from app.services.story_service import MIN_ARTICLES_FOR_STORY
+from app.core.llm.gateway import get_llm_gateway
+from app.core.llm.types import ChatMessage, ChatRequest
 
 logger = logging.getLogger(__name__)
 
 
-class StoryMatcherAgent(AgentDefinition):
-    """Match articles to existing stories or create new ones."""
+_SYSTEM_PROMPT = "你是新闻事件分析专家，负责将新闻归类到大事件故事线。"
 
-    agent_id = "story_matcher"
-    name = "故事线归类"
-    description = "将新闻匹配到大事件故事线（如'2026美伊战争'），或创建新故事线"
-    phase = 3
-    requires = ["tagger", "embedder"]
-    input_fields = ["title", "full_text"]
-    output_fields = ["story_id", "story_title", "story_action"]
+_TASK_PROMPT_TEMPLATE = """\
+请将以下新闻归类到已有故事线，或创建新的故事线。
 
-    _CONFIRM_PROMPT = """\
-判断这篇新闻是否属于以下故事线。
+## 待归类新闻
+{articles_block}
 
-故事线标题: {story_title}
-新闻的故事线提示: {story_hint}
+## 已有活跃故事线
+{stories_block}
 
-请判断这篇新闻是否确实属于该故事线，严格输出JSON：
-{{"belongs": true/false, "reason": "简短理由"}}"""
-
-    _CREATE_PROMPT = """\
-基于这篇新闻创建一个新的故事线/大事件。
-
-故事线提示: {story_hint}
-故事类型: {story_type}
-
-请生成故事线信息，严格输出JSON：
+## 输出要求
+严格输出JSON：
 {{
-  "title": "故事线标题（10-30字，简洁明确）",
-  "description": "故事线概述（50-200字，说明事件背景和进展）",
-  "key_entities": ["核心实体1", "核心实体2", ...],
-  "categories": ["相关分类1", ...]
-}}"""
+  "matches": [
+    {{"article_index": 1, "action": "link", "story_id": "故事线UUID"}},
+    {{"article_index": 2, "action": "new", "title": "故事线标题（10-30字）", "description": "故事线概述（50-200字）", "story_type": "类型", "key_entities": ["实体1", ...], "categories": ["分类1", ...]}},
+    {{"article_index": 3, "action": "skip"}}
+  ]
+}}
 
-    async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
+规则：
+- 相同事件的新闻必须归到同一故事线
+- 新建故事线需要本批中至少2篇相关新闻支撑
+- 普通独立新闻（无明显大事件关联）标记为 skip
+- story_type 从以下选择：war, crisis, election, policy, scandal, disaster, earnings, merger, ipo, regulation, breakthrough, pandemic, summit, protest, trial, other"""
+
+
+class BatchStoryMatcher:
+    """Batch story matching — processes a group of articles at once."""
+
+    async def execute(self, article_ids: list[str]) -> dict:
+        """Run batch story matching for a list of article IDs.
+
+        1. Fetch article data from DB
+        2. Find candidate stories (tags/categories overlap + embedding sort)
+        3. Call LLM to match/create/skip
+        4. Execute DB operations (link articles, create stories)
+
+        Returns {"success": bool, "matched": int, "created": int, "skipped": int, "errors": list}
+        """
         start = time.monotonic()
 
-        # Extract story_hint from tagger results
-        tagger_result = context.agent_results.get("tagger")
-        if not tagger_result or not tagger_result.success:
-            return self._result(start, data={"story_action": "skip", "reason": "no tagger result"})
-
-        story_hint = tagger_result.data.get("story_hint")
-        if not story_hint:
-            return self._result(start, data={"story_action": "skip", "reason": "no story_hint"})
-
-        story_type = tagger_result.data.get("story_type", "other")
-
-        # Extract embedding from embedder results
-        embedder_result = context.agent_results.get("embedder")
-        embedding = None
-        if embedder_result and embedder_result.success:
-            embeddings = embedder_result.data.get("embeddings", [])
-            if embeddings and len(embeddings) > 0:
-                embedding = embeddings[0]
-
-        # Import here to avoid circular imports
         from app.services.story_service import (
-            count_similar_pending_articles,
             create_story,
-            find_matching_story,
+            find_candidate_stories,
+            get_articles_for_story_matching,
             link_article_to_story,
-            link_similar_pending_articles,
+            update_story_embedding,
         )
 
-        # Step 1: Try to find matching story
-        match = await find_matching_story(story_hint, embedding)
+        # 1. Fetch article data
+        articles = await get_articles_for_story_matching(article_ids)
+        if not articles:
+            logger.info("Story matcher: no articles found for IDs %s", article_ids[:3])
+            return {"success": True, "matched": 0, "created": 0, "skipped": len(article_ids), "errors": []}
 
-        if match:
-            match_type = match["match_type"]
-            score = match["score"]
+        # 2. Find candidate stories
+        all_tags = [a.get("tags", []) for a in articles]
+        all_categories = [a.get("categories", []) for a in articles]
+        all_embeddings = [a.get("embedding") for a in articles if a.get("embedding")]
 
-            # High confidence: direct link (no LLM)
-            if match_type in ("text", "vector_high"):
-                await link_article_to_story(
-                    match["story_id"], context.article_id,
-                    matched_by="direct", confidence=score,
-                )
-                duration = (time.monotonic() - start) * 1000
-                return AgentResult(
-                    agent_id=self.agent_id,
-                    success=True,
-                    data={
-                        "story_id": match["story_id"],
-                        "story_title": match["title"],
-                        "story_action": "linked",
-                        "match_type": match_type,
-                        "confidence": round(score, 3),
-                    },
-                    duration_ms=duration,
-                    tokens_used=0,
-                )
+        candidates = await find_candidate_stories(all_tags, all_categories, all_embeddings, limit=30)
 
-            # Gray zone: LLM confirmation
-            if match_type == "vector_gray":
-                task_prompt = self._CONFIRM_PROMPT.format(
-                    story_title=match["title"],
-                    story_hint=story_hint,
-                )
-                try:
-                    data, tokens = await self._cached_json_call(
-                        llm, context, task_prompt, purpose="story_matcher",
-                    )
-                    if data.get("belongs"):
-                        await link_article_to_story(
-                            match["story_id"], context.article_id,
-                            matched_by="llm_confirmed", confidence=score,
-                        )
-                        duration = (time.monotonic() - start) * 1000
-                        return AgentResult(
-                            agent_id=self.agent_id,
-                            success=True,
-                            data={
-                                "story_id": match["story_id"],
-                                "story_title": match["title"],
-                                "story_action": "llm_confirmed",
-                                "confidence": round(score, 3),
-                            },
-                            duration_ms=duration,
-                            tokens_used=tokens,
-                        )
-                    else:
-                        logger.info(
-                            "LLM rejected match: '%s' != '%s' (%s)",
-                            story_hint[:30], match["title"][:30], data.get("reason", ""),
-                        )
-                except Exception:
-                    logger.warning("LLM confirm failed for story match", exc_info=True)
+        # 3. Build LLM prompt
+        articles_block = self._build_articles_block(articles)
+        stories_block = self._build_stories_block(candidates)
 
-        # Step 2: No match — check if enough similar articles to create new story
-        similar_count = await count_similar_pending_articles(story_hint, context.article_id)
+        task_prompt = _TASK_PROMPT_TEMPLATE.format(
+            articles_block=articles_block,
+            stories_block=stories_block if stories_block else "暂无活跃故事线",
+        )
 
-        if similar_count >= (MIN_ARTICLES_FOR_STORY - 1):  # -1 because current article counts too
-            # Create new story via LLM
-            task_prompt = self._CREATE_PROMPT.format(
-                story_hint=story_hint,
-                story_type=story_type,
-            )
+        # 4. Call LLM
+        llm = get_llm_gateway()
+        request = ChatRequest(
+            messages=[
+                ChatMessage(role="system", content=_SYSTEM_PROMPT),
+                ChatMessage(role="user", content=task_prompt),
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        try:
+            response = await llm.chat(request, purpose="story_matcher")
+            data = json.loads(response.content)
+            tokens = response.usage.total_tokens
+        except Exception:
+            logger.exception("Story matcher LLM call failed")
+            return {"success": False, "matched": 0, "created": 0, "skipped": 0, "errors": ["llm_call_failed"]}
+
+        # 5. Process matches
+        matches = data.get("matches", [])
+        matched = 0
+        created = 0
+        skipped = 0
+        errors = []
+
+        # Track newly created stories in this batch (to avoid duplicates within same batch)
+        new_stories: dict[str, str] = {}  # title -> story_id
+
+        for match in matches:
             try:
-                data, tokens = await self._cached_json_call(
-                    llm, context, task_prompt, purpose="story_matcher",
-                )
-                story_id = await create_story(
-                    title=data.get("title", story_hint),
-                    description=data.get("description"),
-                    story_type=story_type,
-                    key_entities=data.get("key_entities"),
-                    categories=data.get("categories") or context.categories,
-                    embedding=embedding,
-                    first_article_id=context.article_id,
-                )
-                # Also link other pending articles with similar hints
-                linked = await link_similar_pending_articles(story_id, story_hint)
+                idx = match.get("article_index", 0) - 1  # 1-indexed in prompt
+                if idx < 0 or idx >= len(articles):
+                    errors.append(f"invalid article_index: {match.get('article_index')}")
+                    continue
 
-                duration = (time.monotonic() - start) * 1000
-                return AgentResult(
-                    agent_id=self.agent_id,
-                    success=True,
-                    data={
-                        "story_id": story_id,
-                        "story_title": data.get("title", story_hint),
-                        "story_action": "created",
-                        "linked_pending": linked,
-                    },
-                    duration_ms=duration,
-                    tokens_used=tokens,
-                )
-            except Exception:
-                logger.warning("Failed to create story for '%s'", story_hint[:30], exc_info=True)
+                article = articles[idx]
+                action = match.get("action", "skip")
 
-        # No match, not enough articles — mark as pending
-        return self._result(start, data={
-            "story_action": "pending",
-            "story_hint": story_hint,
-            "similar_count": similar_count,
-        })
+                if action == "link":
+                    story_id = match.get("story_id")
+                    if story_id:
+                        # Validate story_id exists in candidates
+                        valid_ids = {str(c["id"]) for c in candidates}
+                        if story_id not in valid_ids:
+                            logger.warning(
+                                "LLM returned non-existent story_id: %s", story_id
+                            )
+                            errors.append(f"invalid story_id: {story_id}")
+                            continue
+                        await link_article_to_story(story_id, article["id"], matched_by="llm_batch", confidence=0.9)
+                        await update_story_embedding(story_id)
+                        matched += 1
+                    else:
+                        errors.append(f"link action missing story_id for article {idx+1}")
 
-    def _result(self, start: float, data: dict, tokens: int = 0) -> AgentResult:
+                elif action == "new":
+                    title = match.get("title", "")
+                    # Check if we already created this story in this batch
+                    if title in new_stories:
+                        await link_article_to_story(
+                            new_stories[title], article["id"],
+                            matched_by="llm_batch", confidence=0.9,
+                        )
+                        matched += 1
+                    else:
+                        story_id = await create_story(
+                            title=title,
+                            description=match.get("description"),
+                            story_type=match.get("story_type", "other"),
+                            key_entities=match.get("key_entities"),
+                            categories=match.get("categories") or article.get("categories", []),
+                            embedding=article.get("embedding"),
+                            first_article_id=article["id"],
+                        )
+                        new_stories[title] = story_id
+                        created += 1
+
+                elif action == "skip":
+                    skipped += 1
+                else:
+                    errors.append(f"unknown action: {action}")
+
+            except Exception as e:
+                logger.warning("Story match processing error for article %d: %s", idx + 1, e, exc_info=True)
+                errors.append(str(e)[:200])
+
         duration = (time.monotonic() - start) * 1000
-        return AgentResult(
-            agent_id=self.agent_id,
-            success=True,
-            data=data,
-            duration_ms=duration,
-            tokens_used=tokens,
+        logger.info(
+            "Story matcher complete: %d articles -> %d matched, %d created, %d skipped | %d tokens | %.0fms",
+            len(articles), matched, created, skipped, tokens, duration,
         )
+
+        return {
+            "success": True,
+            "matched": matched,
+            "created": created,
+            "skipped": skipped,
+            "tokens_used": tokens,
+            "duration_ms": round(duration, 1),
+            "errors": errors,
+        }
+
+    def _build_articles_block(self, articles: list[dict]) -> str:
+        """Build the articles section of the LLM prompt."""
+        lines = []
+        for i, a in enumerate(articles, 1):
+            summary = (a.get("ai_summary") or a.get("summary") or "")[:100]
+            cats = ", ".join(a.get("categories", [])[:3])
+            tags = ", ".join(a.get("tags", [])[:5])
+            lines.append(f"{i}. {a['title']}\n   摘要：{summary}\n   分类：{cats} | 标签：{tags}")
+        return "\n".join(lines)
+
+    def _build_stories_block(self, candidates: list[dict]) -> str:
+        """Build the existing stories section of the LLM prompt."""
+        if not candidates:
+            return ""
+        lines = []
+        for c in candidates:
+            lines.append(f"- {c['title']} ({c['article_count']}篇) [{c['story_type']}] ID:{c['id']}")
+        return "\n".join(lines)

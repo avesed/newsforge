@@ -23,7 +23,7 @@ class UnifiedTaggerAgent(AgentDefinition):
     phase = 2
     requires = []
     input_fields = ["title", "summary", "full_text", "categories"]
-    output_fields = ["tags", "industry_tags", "event_tags", "story_hint", "story_type"]
+    output_fields = ["tags", "industry_tags", "event_tags"]
 
     _TASK_PROMPT = """\
 请为这篇新闻生成标签，严格输出JSON格式。
@@ -47,18 +47,8 @@ class UnifiedTaggerAgent(AgentDefinition):
 合作签约、诉讼仲裁、监管处罚、评级变动、分红派息、战略调整
 如无匹配事件，返回空数组。
 
-## story_hint（必填）
-这篇新闻所属的大事件/故事线名称（5-20字）。
-例："2026美伊战争"、"英伟达Q4财报季"、"OpenAI上市"、"日本大地震"。
-如果是普通独立新闻（无明显大事件关联），填 null。
-
-## story_type（story_hint非null时必填）
-事件类型，从以下选择：
-war, crisis, election, policy, scandal, disaster, earnings, merger, ipo, regulation, breakthrough, pandemic, summit, protest, trial, other
-如果 story_hint 为 null，此字段也填 null。
-
 输出格式：
-{"tags": [...], "industry_tags": [...], "event_tags": [...], "story_hint": "..." or null, "story_type": "..." or null}"""
+{"tags": [...], "industry_tags": [...], "event_tags": [...]}"""
 
     async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
         start = time.monotonic()
@@ -82,23 +72,6 @@ war, crisis, election, policy, scandal, disaster, earnings, merger, ipo, regulat
             event_tags = []
         event_tags = [str(t).strip() for t in event_tags if t][:10]
 
-        story_hint = data.get("story_hint")
-        if story_hint and isinstance(story_hint, str):
-            story_hint = story_hint.strip()[:100]
-        else:
-            story_hint = None
-
-        story_type = data.get("story_type")
-        VALID_STORY_TYPES = {"war", "crisis", "election", "policy", "scandal", "disaster", "earnings", "merger", "ipo", "regulation", "breakthrough", "pandemic", "summit", "protest", "trial", "other"}
-        if story_type and isinstance(story_type, str) and story_type.strip().lower() in VALID_STORY_TYPES:
-            story_type = story_type.strip().lower()
-        else:
-            story_type = None
-
-        # Clear story_type if no story_hint
-        if not story_hint:
-            story_type = None
-
         duration = (time.monotonic() - start) * 1000
 
         return AgentResult(
@@ -108,8 +81,6 @@ war, crisis, election, policy, scandal, disaster, earnings, merger, ipo, regulat
                 "tags": tags,
                 "industry_tags": industry_tags,
                 "event_tags": event_tags,
-                "story_hint": story_hint,
-                "story_type": story_type,
             },
             duration_ms=duration,
             tokens_used=tokens,

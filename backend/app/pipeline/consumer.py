@@ -21,6 +21,7 @@ import uuid
 
 from app.core.config import get_settings, load_pipeline_config
 from app.db.redis import get_redis
+from app.pipeline import agent_queue as aq
 from app.pipeline import queue as q
 from app.pipeline.circuit_breaker import CircuitBreaker
 
@@ -39,6 +40,11 @@ class PipelineConsumer:
         self._max_retries = consumer_config.get("max_retries", 3)
         self._max_articles = consumer_config.get("max_articles_before_restart", 5000)
         self._max_uptime = consumer_config.get("max_uptime_seconds", 86400)
+
+        # Story batching
+        self._story_batch_size = consumer_config.get("story_batch_size", 8)
+        self._story_batch_size_target = self._story_batch_size
+        self._story_batch: list[str] = []
 
         self._active_count = 0
         self._concurrency_target = self._concurrency  # initial from config
@@ -96,6 +102,7 @@ class PipelineConsumer:
         # Start background pollers
         retry_task = asyncio.create_task(self._retry_poller(redis))
         config_task = asyncio.create_task(self._config_poller(redis))
+        story_flusher_task = asyncio.create_task(self._story_batch_flusher(redis))
 
         try:
             while not self._should_stop():
@@ -144,8 +151,16 @@ class PipelineConsumer:
         except asyncio.CancelledError:
             logger.info("Consumer cancelled")
         finally:
+            # Flush remaining story batch before shutdown
+            if self._story_batch:
+                try:
+                    await self._submit_story_group(redis)
+                except Exception:
+                    logger.warning("Failed to flush story batch on shutdown")
+
             retry_task.cancel()
             config_task.cancel()
+            story_flusher_task.cancel()
             # Wait for in-flight tasks
             if self._tasks:
                 logger.info("Waiting for %d in-flight tasks...", len(self._tasks))
@@ -178,6 +193,12 @@ class PipelineConsumer:
                 logger.warning("Failed to mark article completed: %s", article_id)
             self._processed += 1
             await q.increment_metrics(redis, "processed", 1)
+
+            # Accumulate for story batch
+            self._story_batch.append(article_id)
+            if len(self._story_batch) >= self._story_batch_size_target:
+                await self._submit_story_group(redis)
+
             if self._circuit_breaker:
                 await self._circuit_breaker.record_success()
         except asyncio.TimeoutError:
@@ -346,16 +367,6 @@ class PipelineConsumer:
                     finance_meta["industry_tags"] = td["industry_tags"]
                 if td.get("event_tags"):
                     finance_meta["event_tags"] = td["event_tags"]
-                if td.get("story_hint"):
-                    update_values["story_hint"] = td["story_hint"]
-                    update_values["story_type"] = td.get("story_type")
-
-            # Extract story matcher results
-            story_result = agent_data.get("story_matcher", {})
-            if story_result.get("success"):
-                sd = story_result.get("data", {})
-                if sd.get("story_id"):
-                    update_values["story_id"] = sd["story_id"]
 
             # Extract stock symbols from entity results
             stock_entities = [e for e in all_entities if e.get("type") in ("stock", "index")]
@@ -403,6 +414,51 @@ class PipelineConsumer:
             await q.enqueue_dead_letter(redis, article_data, error)
             await q.increment_metrics(redis, "dead_lettered", 1)
 
+    async def _submit_story_group(self, redis) -> None:
+        """Submit a story clustering agent group to the unified queue."""
+        if not self._story_batch:
+            return
+
+        batch = self._story_batch.copy()
+        self._story_batch.clear()
+
+        try:
+            group_id, result_key = await aq.submit_agent_group(
+                redis,
+                group_type="story",
+                context_data={"article_ids": batch},
+                agents=["story_matcher"],
+                display_info={"label": f"{len(batch)}篇文章故事线归类", "article_count": len(batch)},
+            )
+            # Fire-and-forget: story_matcher writes directly to DB
+            # Set short TTL on result_key since no one waits for it
+            await redis.expire(result_key, 60)
+
+            logger.info(
+                "Story group submitted: %d articles (group=%s)",
+                len(batch), group_id[:8],
+            )
+        except Exception:
+            logger.warning("Failed to submit story group", exc_info=True)
+            # Put articles back for next batch
+            self._story_batch.extend(batch)
+
+    async def _story_batch_flusher(self, redis) -> None:
+        """Periodically flush incomplete story batches."""
+        while not self._shutdown:
+            try:
+                await asyncio.sleep(60)
+                if self._story_batch:
+                    logger.debug(
+                        "Flushing story batch: %d articles (< %d target)",
+                        len(self._story_batch), self._story_batch_size_target,
+                    )
+                    await self._submit_story_group(redis)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Story batch flusher error")
+
     async def _config_poller(self, redis) -> None:
         """Poll Redis for concurrency target and pause state changes."""
         while not self._shutdown:
@@ -416,6 +472,17 @@ class PipelineConsumer:
                         target,
                     )
                     self._concurrency_target = target
+
+                # Check story batch size
+                sb_val = await redis.get("nf:pipeline:story_batch_size")
+                if sb_val is not None:
+                    new_size = int(sb_val)
+                    if new_size != self._story_batch_size_target:
+                        logger.info(
+                            "Story batch size changed: %d -> %d",
+                            self._story_batch_size_target, new_size,
+                        )
+                        self._story_batch_size_target = new_size
 
                 # Check pause state
                 paused = await q.is_paused(redis)

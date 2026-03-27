@@ -32,7 +32,7 @@ class NewsStory(Base):
     timeline: Mapped[dict | None] = mapped_column(JSONB)  # [{date, summary}]
 
     article_count: Mapped[int] = mapped_column(Integer, default=0)
-    embedding = mapped_column(Vector(512), nullable=True)  # average of article embeddings
+    embedding = mapped_column(Vector(512), nullable=True)  # average of linked article embeddings
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
