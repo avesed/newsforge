@@ -115,7 +115,8 @@ async def find_candidate_stories(
     batch_categories = list(set(c for cats in article_categories for c in cats if c))
 
     async with factory() as session:
-        # Layer 1: Find stories with overlapping categories or key_entities
+        # Layer 1: Find stories with overlapping key_entities (primary signal)
+        # or BOTH same categories AND same story_type (secondary, stricter)
         candidates: list[dict] = []
         if batch_tags or batch_categories:
             overlap_query = text("""
@@ -123,10 +124,7 @@ async def find_candidate_stories(
                 FROM news_stories
                 WHERE is_active = true
                   AND last_updated_at >= :cutoff
-                  AND (
-                    categories && :categories
-                    OR key_entities && :tags
-                  )
+                  AND key_entities && :tags
                 ORDER BY article_count DESC
                 LIMIT :limit_val
             """)
@@ -134,7 +132,6 @@ async def find_candidate_stories(
                 overlap_query,
                 {
                     "cutoff": cutoff,
-                    "categories": batch_categories,
                     "tags": batch_tags[:50],
                     "limit_val": limit * 2,  # over-fetch for layer 2 filtering
                 },
@@ -380,7 +377,8 @@ async def merge_similar_stories(similarity_threshold: float = 0.85) -> int:
     merged_count = 0
 
     async with factory() as session:
-        # Layer 1: story_type + key_entities/categories overlap
+        # Layer 1: key_entities overlap (required), optionally same story_type
+        # Note: categories overlap alone is too loose (e.g. "politics" matches unrelated stories)
         layer1_query = text("""
             SELECT DISTINCT
                 LEAST(s1.id, s2.id) AS id1,
@@ -388,13 +386,10 @@ async def merge_similar_stories(similarity_threshold: float = 0.85) -> int:
             FROM news_stories s1
             JOIN news_stories s2
               ON s1.id < s2.id
-              AND s1.story_type = s2.story_type
               AND s2.is_active = true
-              AND (
-                s1.key_entities && s2.key_entities
-                OR s1.categories && s2.categories
-              )
+              AND s1.key_entities && s2.key_entities
             WHERE s1.is_active = true
+              AND array_length(s1.key_entities, 1) > 0
             LIMIT 40
         """)
         layer1_result = await session.execute(layer1_query)
@@ -481,13 +476,17 @@ async def merge_similar_stories(similarity_threshold: float = 0.85) -> int:
         )
 
     prompt = (
-        "以下故事线对可能描述同一事件，请判断哪些应该合并。\n"
-        "注意：同一大事件的不同角度报道（如经济影响、军事行动、外交斡旋）应该合并为一个故事线。\n\n"
+        "以下故事线对可能描述同一事件，请判断哪些应该合并。\n\n"
+        "合并规则：\n"
+        "- 只有描述完全相同事件的故事线才应该合并\n"
+        "- 仅因为涉及同一人物（如特朗普）但描述不同事件的，不应合并\n"
+        "- 同一事件的不同角度（经济影响、军事行动、外交）可以合并\n"
+        "- 不同事件即使主题相似（如两次不同的裁员）也不应合并\n\n"
         + "\n\n".join(pair_lines)
         + '\n\n请输出JSON格式：\n'
         '{"merge": [{"pair_index": 1, "reason": "简短理由"}], '
         '"skip": [{"pair_index": 2, "reason": "简短理由"}]}\n'
-        "merge 表示应该合并（保留A），skip 表示不应合并。"
+        "merge 表示应该合并（保留A），skip 表示不应合并。如果不确定，选择 skip。"
     )
 
     try:
