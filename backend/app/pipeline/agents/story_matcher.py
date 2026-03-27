@@ -41,6 +41,7 @@ _TASK_PROMPT_TEMPLATE = """\
 - 相同事件的新闻必须归到同一故事线
 - 新建故事线需要本批中至少2篇相关新闻支撑
 - 普通独立新闻（无明显大事件关联）标记为 skip
+- title 必须是简短的事件概述（10-25字），不要用新闻原标题。例："2026美伊战争"、"SpaceX IPO"、"Meta大规模裁员"
 - story_type 从以下选择：war, crisis, election, policy, scandal, disaster, earnings, merger, ipo, regulation, breakthrough, pandemic, summit, protest, trial, other"""
 
 
