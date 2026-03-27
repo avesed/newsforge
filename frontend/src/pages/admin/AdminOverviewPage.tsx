@@ -137,8 +137,8 @@ function OverviewContent() {
           icon={CalendarDays}
         />
         <StatsCard
-          label={t("admin.activeEvents")}
-          value={o.events_active.toLocaleString()}
+          label={t("admin.activeStories")}
+          value={o.stories_active.toLocaleString()}
           icon={Zap}
         />
         <StatsCard

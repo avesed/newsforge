@@ -21,16 +21,9 @@ async def lifespan(app: FastAPI):
 
     get_engine()  # Initialize engine
 
-    # Start event checker background task
-    from app.pipeline.orchestrator import start_event_checker
-    start_event_checker()
-
     yield
 
     # Shutdown
-    from app.pipeline.orchestrator import stop_event_checker
-    await stop_event_checker()
-
     from app.content.fetcher import shutdown_crawler
     await shutdown_crawler()
     await close_redis()
@@ -77,10 +70,6 @@ def create_app() -> FastAPI:
     app.include_router(streaming_router.router, prefix="/api/v1")
     app.include_router(bookmarks_router.router, prefix="/api/v1")
     app.include_router(subscriptions_router.router, prefix="/api/v1")
-
-    from app.api.v1 import events as events_router
-
-    app.include_router(events_router.router, prefix="/api/v1")
 
     from app.api.v1 import stories as stories_router
 

@@ -166,7 +166,7 @@ export interface DashboardStats {
     articlesTotal: number;
     articlesToday: number;
     articlesThisWeek: number;
-    eventsActive: number;
+    storiesActive: number;
     usersTotal: number;
     consumersActive: number;
   };

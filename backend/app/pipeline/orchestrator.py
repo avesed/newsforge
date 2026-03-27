@@ -7,7 +7,6 @@ Two responsibilities:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 import uuid
@@ -27,7 +26,6 @@ from app.sources.rss.rsshub import RSSHubSource
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
-_event_checker_task: asyncio.Task | None = None
 
 
 async def poll_feeds() -> None:
@@ -512,34 +510,6 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     return results
 
 
-async def run_event_checker() -> None:
-    """Background loop that processes event aggregation checks.
-
-    Reads from nf:events:check Redis list. Non-blocking, separate from main pipeline.
-    """
-    from app.services.event_service import check_and_create_event
-
-    redis = await get_redis()
-    logger.info("Event checker started")
-
-    while True:
-        try:
-            result = await redis.blpop("nf:events:check", timeout=5)
-            if result:
-                _, article_id = result
-                if isinstance(article_id, bytes):
-                    article_id = article_id.decode()
-                try:
-                    await check_and_create_event(article_id)
-                except Exception:
-                    logger.exception("Event check failed for article %s", article_id)
-        except asyncio.CancelledError:
-            logger.info("Event checker cancelled")
-            return
-        except Exception:
-            logger.exception("Event checker error")
-            await asyncio.sleep(5)
-
 
 def create_scheduler() -> AsyncIOScheduler:
     """Create and configure the APScheduler."""
@@ -570,20 +540,6 @@ def create_scheduler() -> AsyncIOScheduler:
         hours=cleanup_hours,
         id="cleanup",
         name="Cleanup old articles",
-        misfire_grace_time=600,
-        coalesce=True,
-        max_instances=1,
-    )
-
-    # Deactivate stale events (every 6 hours)
-    from app.services.event_service import deactivate_stale_events
-
-    scheduler.add_job(
-        deactivate_stale_events,
-        "interval",
-        hours=6,
-        id="deactivate_stale_events",
-        name="Deactivate stale events",
         misfire_grace_time=600,
         coalesce=True,
         max_instances=1,
@@ -628,21 +584,3 @@ def get_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
-def start_event_checker() -> asyncio.Task:
-    """Start the event checker background task. Call after event loop is running."""
-    global _event_checker_task
-    if _event_checker_task is None or _event_checker_task.done():
-        _event_checker_task = asyncio.create_task(run_event_checker())
-    return _event_checker_task
-
-
-async def stop_event_checker() -> None:
-    """Cancel the event checker background task."""
-    global _event_checker_task
-    if _event_checker_task and not _event_checker_task.done():
-        _event_checker_task.cancel()
-        try:
-            await _event_checker_task
-        except asyncio.CancelledError:
-            pass
-        _event_checker_task = None

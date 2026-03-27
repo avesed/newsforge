@@ -11,15 +11,11 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    from app.pipeline.orchestrator import get_scheduler, run_event_checker
+    from app.pipeline.orchestrator import get_scheduler
 
     scheduler = get_scheduler()
     scheduler.start()
     logger.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
-
-    # Run event checker as a background task
-    event_task = asyncio.create_task(run_event_checker())
-    logger.info("Event checker started")
 
     # Keep running forever
     try:
@@ -28,7 +24,6 @@ async def main():
         pass
     finally:
         scheduler.shutdown(wait=False)
-        event_task.cancel()
 
 
 if __name__ == "__main__":

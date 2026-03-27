@@ -14,7 +14,7 @@ from app.db.database import get_db
 from app.db.redis import get_redis
 from app.models.article import Article
 from app.models.api_consumer import ApiConsumer
-from app.models.news_event import NewsEvent
+from app.models.news_story import NewsStory
 from app.models.pipeline_event import PipelineEvent
 from app.models.source import Source
 from app.models.user import User
@@ -60,10 +60,10 @@ async def dashboard_stats(
     )
     articles_this_week = articles_week_result.scalar() or 0
 
-    events_active_result = await db.execute(
-        select(func.count(NewsEvent.id)).where(NewsEvent.is_active == True)  # noqa: E712
+    stories_active_result = await db.execute(
+        select(func.count(NewsStory.id)).where(NewsStory.is_active == True)  # noqa: E712
     )
-    events_active = events_active_result.scalar() or 0
+    stories_active = stories_active_result.scalar() or 0
 
     users_total_result = await db.execute(select(func.count(User.id)))
     users_total = users_total_result.scalar() or 0
@@ -203,7 +203,7 @@ async def dashboard_stats(
             "articles_total": articles_total,
             "articles_today": articles_today,
             "articles_this_week": articles_this_week,
-            "events_active": events_active,
+            "stories_active": stories_active,
             "users_total": users_total,
             "consumers_active": consumers_active,
         },

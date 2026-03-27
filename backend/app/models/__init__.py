@@ -17,7 +17,6 @@ from app.models.embedding import DocumentEmbedding  # noqa: F401
 from app.models.pipeline_event import PipelineEvent  # noqa: F401
 from app.models.api_consumer import ApiConsumer  # noqa: F401
 from app.models.webhook import Webhook  # noqa: F401
-from app.models.news_event import NewsEvent, EventArticle  # noqa: F401
 from app.models.news_story import NewsStory, StoryArticle  # noqa: F401
 from app.models.llm_provider import LLMProvider  # noqa: F401
 from app.models.llm_profile import LLMProfile  # noqa: F401

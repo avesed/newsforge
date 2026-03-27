@@ -390,13 +390,6 @@ class PipelineConsumer:
         await cache.invalidate_pattern("homepage:*")
         await cache.invalidate("categories")
 
-        # Enqueue event aggregation check (async, non-blocking)
-        try:
-            redis = await get_redis()
-            await redis.rpush("nf:events:check", str(article_id))
-        except Exception:
-            logger.debug("Failed to enqueue event check for %s", article_id)
-
         logger.info(
             "Processed: category=%s value=%d agents=%d url=%s",
             primary_cat,

@@ -468,7 +468,7 @@ export interface DashboardStatsRaw {
     articles_total: number;
     articles_today: number;
     articles_this_week: number;
-    events_active: number;
+    stories_active: number;
     users_total: number;
     consumers_active: number;
   };

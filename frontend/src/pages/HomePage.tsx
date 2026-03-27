@@ -3,7 +3,6 @@ import { CategoryNav } from "@/components/category/CategoryNav";
 import { CategorySidebar } from "@/components/category/CategorySidebar";
 import { ArticleList } from "@/components/article/ArticleList";
 import { TrendingStories } from "@/components/stories/TrendingStories";
-import { TrendingEvents } from "@/components/events/TrendingEvents";
 import { useCategoryStore } from "@/stores/categoryStore";
 
 export default function HomePage() {
@@ -34,7 +33,6 @@ export default function HomePage() {
         </div>
 
         <TrendingStories />
-        <TrendingEvents />
         <ArticleList category={activeCategory ?? undefined} />
       </div>
     </div>
