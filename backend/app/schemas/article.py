@@ -33,6 +33,10 @@ class ArticleResponse(CamelModel):
     ai_analysis: str | None = None
     full_text: str | None = None
 
+    # Translation
+    title_zh: str | None = None
+    full_text_zh: str | None = None
+
     # Entities & Sentiment
     entities: list[dict] | None = None
     primary_entity: str | None = None

@@ -28,6 +28,8 @@ export interface Article {
   content: string | null;
   aiAnalysis: string | null;
   fullText: string | null;
+  titleZh: string | null;
+  fullTextZh: string | null;
   sourceUrl: string;
   sourceName: string;
   imageUrl: string | null;

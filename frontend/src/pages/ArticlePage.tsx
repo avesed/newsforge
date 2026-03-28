@@ -275,9 +275,14 @@ export default function ArticlePage() {
       </div>
 
       {/* Title */}
-      <h1 className="text-2xl md:text-3xl font-bold tracking-tight leading-tight text-foreground mb-4">
-        {article.title}
-      </h1>
+      <div className="mb-4">
+        <h1 className="text-2xl md:text-3xl font-bold tracking-tight leading-tight text-foreground">
+          {locale === "zh" && article.titleZh ? article.titleZh : article.title}
+        </h1>
+        {locale === "zh" && article.titleZh && (
+          <p className="mt-1.5 text-sm text-muted-foreground" lang="en">{article.title}</p>
+        )}
+      </div>
 
       {/* Meta row */}
       <div className="flex items-center gap-3 text-sm text-muted-foreground mb-4">
@@ -410,7 +415,7 @@ export default function ArticlePage() {
         >
           <div key={activeTab} className={tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left"}>
             {article.fullText ? (
-              <MarkdownRenderer content={article.fullText} />
+              <MarkdownRenderer content={locale === "zh" && article.fullTextZh ? article.fullTextZh : article.fullText} />
             ) : (
               <p className="text-muted-foreground py-8 text-center text-sm">
                 {t("article.fullTextEmpty", "暂无全文内容")}

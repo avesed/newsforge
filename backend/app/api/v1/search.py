@@ -172,6 +172,7 @@ def _to_response_from_row(row) -> ArticleResponse:
         has_market_impact=row.has_market_impact,
         summary=row.summary,
         ai_summary=row.ai_summary,
+        title_zh=getattr(row, "title_zh", None),
         sentiment_score=row.sentiment_score,
         sentiment_label=row.sentiment_label,
         content_status=row.content_status,
@@ -220,7 +221,7 @@ async def search_articles(
 
     # --- Path A: GIN trigram search ---
     trigram_sql = text(f"""
-        SELECT a.id, a.title, a.url, a.published_at, a.language,
+        SELECT a.id, a.title, a.title_zh, a.url, a.published_at, a.language,
                a.primary_category, a.categories, a.value_score,
                a.has_market_impact, a.summary, a.ai_summary,
                a.sentiment_score, a.sentiment_label, a.content_status,
@@ -331,7 +332,7 @@ async def search_articles(
     if missing_ids:
         placeholders = ", ".join(f":id_{i}" for i in range(len(missing_ids)))
         fetch_sql = text(f"""
-            SELECT a.id, a.title, a.url, a.published_at, a.language,
+            SELECT a.id, a.title, a.title_zh, a.url, a.published_at, a.language,
                    a.primary_category, a.categories, a.value_score,
                    a.has_market_impact, a.summary, a.ai_summary,
                    a.sentiment_score, a.sentiment_label, a.content_status,

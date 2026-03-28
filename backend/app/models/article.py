@@ -73,6 +73,10 @@ class Article(Base):
     # Cleaned full article text (from content cleaner agent)
     full_text: Mapped[str | None] = mapped_column(Text)
 
+    # === Translation (Chinese) ===
+    title_zh: Mapped[str | None] = mapped_column(String(500))
+    full_text_zh: Mapped[str | None] = mapped_column(Text)
+
     # Content storage
     content_file_path: Mapped[str | None] = mapped_column(String(500))
     content_status: Mapped[str] = mapped_column(

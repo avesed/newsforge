@@ -326,6 +326,14 @@ class PipelineConsumer:
                 if summary_data.get("detailed_summary"):
                     update_values["detailed_summary"] = summary_data["detailed_summary"]
 
+            translator = agent_data.get("translator", {})
+            if translator.get("success"):
+                td = translator.get("data", {})
+                if td.get("title_zh"):
+                    update_values["title_zh"] = td["title_zh"]
+                if td.get("full_text_zh"):
+                    update_values["full_text_zh"] = td["full_text_zh"]
+
             sentiment = agent_data.get("sentiment", {})
             if sentiment.get("success"):
                 update_values["sentiment_score"] = sentiment.get("data", {}).get("sentiment_score")

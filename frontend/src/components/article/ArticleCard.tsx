@@ -74,7 +74,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
           <div className="min-w-0 flex-1">
             {/* Title */}
             <h3 className="font-semibold text-[15px] leading-snug line-clamp-2 mb-1 group-hover:text-primary transition-colors">
-              {article.title}
+              {locale === "zh" && article.titleZh ? article.titleZh : article.title}
             </h3>
 
             {/* Summary */}

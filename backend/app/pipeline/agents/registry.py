@@ -182,6 +182,7 @@ def _register_all_agents(registry: AgentRegistry) -> None:
     from app.pipeline.agents.domain_specific import PoliticsImpactAgent, TechTrendAgent
     from app.pipeline.agents.deep_reporter import DeepReporterAgent
     from app.pipeline.agents.embedder import EmbedderAgent
+    from app.pipeline.agents.translator import TranslatorAgent
 
     agents: list[AgentDefinition] = [
         UnifiedSummarizerAgent(),
@@ -193,6 +194,7 @@ def _register_all_agents(registry: AgentRegistry) -> None:
         TechTrendAgent(),
         DeepReporterAgent(),
         EmbedderAgent(),
+        TranslatorAgent(),
     ]
 
     for agent in agents:

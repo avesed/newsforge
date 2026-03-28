@@ -25,6 +25,7 @@ agent_triggers:
     - sentiment
     - entity
     - tagger
+    - translator
 
   # Category-specific agents (only domain-specific + scorer)
   category_triggered:
@@ -59,6 +60,7 @@ routing_rules:
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
     - sentiment
+    - translator
 
 # Per-category pipeline depth (legacy — still used for content fetch decisions)
 categories:
