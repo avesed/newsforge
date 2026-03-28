@@ -82,6 +82,37 @@
   animation: fadeIn 150ms ease-out;
 }
 
+/* Tab slide-in animations */
+@keyframes slideInFromRight {
+  from {
+    opacity: 0;
+    transform: translateX(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInFromLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-in-right {
+  animation: slideInFromRight 200ms ease-out;
+}
+
+.animate-slide-in-left {
+  animation: slideInFromLeft 200ms ease-out;
+}
+
 /* Collapsible panel transition */
 .collapsible-panel {
   display: grid;

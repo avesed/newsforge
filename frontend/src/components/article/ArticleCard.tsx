@@ -1,5 +1,5 @@
-import { Link } from "react-router-dom";
-import { BookOpen, Check, Clock, TrendingUp } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { BookOpen, Check, CircleCheck, Clock, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { cn } from "@/lib/utils";
@@ -9,17 +9,21 @@ import type { Article } from "@/types";
 interface ArticleCardProps {
   article: Article;
   isRead?: boolean;
+  onMarkRead?: (id: string) => void;
 }
 
-export function ArticleCard({ article, isRead }: ArticleCardProps) {
-  const { i18n } = useTranslation();
+export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
+  const { t, i18n } = useTranslation();
   const locale = i18n.language === "zh" ? "zh" : "en";
+  const navigate = useNavigate();
 
   return (
     <div
       className={cn(
         "group border-b border-border/50 last:border-b-0",
-        article.valueScore != null && article.valueScore > 80 && "border-l-2 border-l-amber-400 pl-2"
+        article.valueScore != null && article.valueScore > 80
+          ? "border-l-2 border-l-amber-400 pl-2"
+          : isRead && "border-l-2 border-l-muted-foreground/20 pl-2"
       )}
     >
       <Link
@@ -47,8 +51,21 @@ export function ArticleCard({ article, isRead }: ArticleCardProps) {
           {isRead && (
             <span className="flex items-center gap-0.5 text-muted-foreground/50">
               <Check className="h-3 w-3" />
-              {locale === "zh" ? "已读" : "read"}
+              {t("article.read")}
             </span>
+          )}
+          {!isRead && onMarkRead && (
+            <button
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onMarkRead(article.id);
+              }}
+              className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+              title={t("article.markRead")}
+            >
+              <CircleCheck className="h-3.5 w-3.5" />
+            </button>
           )}
         </div>
 
@@ -62,7 +79,7 @@ export function ArticleCard({ article, isRead }: ArticleCardProps) {
 
             {/* Summary */}
             {article.summary && (
-              <p className="text-sm text-muted-foreground line-clamp-1 mb-2">
+              <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
                 {article.summary}
               </p>
             )}
@@ -103,19 +120,19 @@ export function ArticleCard({ article, isRead }: ArticleCardProps) {
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    window.location.href = `/stories/${article.storyId}`;
+                    navigate(`/stories/${article.storyId}`);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
                       e.stopPropagation();
-                      window.location.href = `/stories/${article.storyId}`;
+                      navigate(`/stories/${article.storyId}`);
                     }
                   }}
                   className="inline-flex items-center gap-1 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-500 hover:bg-indigo-500/20 transition-colors cursor-pointer"
                 >
                   <BookOpen className="h-3 w-3" />
-                  {locale === "zh" ? "\u6545\u4e8b\u7ebf" : "Story"}
+                  {t("stories.badge")}
                 </span>
               )}
             </div>

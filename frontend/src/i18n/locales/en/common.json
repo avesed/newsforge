@@ -41,7 +41,11 @@
     "fullTextEmpty": "Full text not available",
     "viewOriginal": "View Original",
     "aiAnalyzing": "AI analyzing...",
-    "generating": "Generating..."
+    "generating": "Generating...",
+    "readTime": "{{min}} min read",
+    "noMore": "All caught up",
+    "read": "read",
+    "markRead": "Mark as read"
   },
   "auth": {
     "email": "Email",
@@ -112,7 +116,21 @@
     "language": "Language",
     "theme": "Theme",
     "themeLight": "Light",
-    "themeDark": "Dark"
+    "themeDark": "Dark",
+    "readingPreferences": "Reading Preferences",
+    "fontSize": "Font Size",
+    "fontSizeSm": "Small",
+    "fontSizeBase": "Default",
+    "fontSizeLg": "Large",
+    "fontSizeXl": "Extra Large",
+    "lineSpacing": "Line Spacing",
+    "lineSpacingNormal": "Compact",
+    "lineSpacingRelaxed": "Default",
+    "lineSpacingLoose": "Loose",
+    "contentWidth": "Content Width",
+    "contentWidthNarrow": "Narrow",
+    "contentWidthDefault": "Default",
+    "contentWidthWide": "Wide"
   },
   "admin": {
     "title": "Admin Panel",

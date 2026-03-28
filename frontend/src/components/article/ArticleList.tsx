@@ -14,7 +14,7 @@ interface ArticleListProps {
 
 export function ArticleList({ category }: ArticleListProps) {
   const { t } = useTranslation();
-  const { isRead } = useReadHistory();
+  const { isRead, markRead } = useReadHistory();
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -96,7 +96,7 @@ export function ArticleList({ category }: ArticleListProps) {
           className={index < animateUpTo ? "animate-stagger-item" : undefined}
           style={index < animateUpTo ? { animationDelay: `${Math.min(index * 50, 500)}ms` } : undefined}
         >
-          <ArticleCard article={article} isRead={isRead(article.id)} />
+          <ArticleCard article={article} isRead={isRead(article.id)} onMarkRead={(id) => void markRead(id)} />
         </div>
       ))}
       <div ref={loadMoreRef} className="py-4 text-center">
@@ -109,6 +109,13 @@ export function ArticleList({ category }: ArticleListProps) {
           </div>
         )}
       </div>
+      {!hasNextPage && articles.length > 0 && !isFetchingNextPage && (
+        <div className="flex items-center gap-3 py-6 text-xs text-muted-foreground">
+          <div className="h-px flex-1 bg-border" />
+          <span>{t("article.noMore")}</span>
+          <div className="h-px flex-1 bg-border" />
+        </div>
+      )}
     </div>
   );
 }

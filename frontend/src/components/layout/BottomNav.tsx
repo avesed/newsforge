@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Home, Grid3X3, Search, Bookmark, Settings } from "lucide-react";
@@ -23,6 +24,31 @@ export function BottomNav() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthStore();
+  const [hidden, setHidden] = useState(false);
+
+  useEffect(() => {
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+
+    const onScroll = () => {
+      if (!ticking) {
+        requestAnimationFrame(() => {
+          const currentY = window.scrollY;
+          if (currentY > lastScrollY && currentY > 100) {
+            setHidden(true);
+          } else if (currentY < lastScrollY) {
+            setHidden(false);
+          }
+          lastScrollY = currentY;
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   const handleNavigate = (item: NavItem) => {
     if (item.requireAuth && !user) {
@@ -40,7 +66,7 @@ export function BottomNav() {
   const activeIndex = NAV_ITEMS.findIndex((item) => isActive(item.path));
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur lg:hidden">
+    <nav className={`fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur lg:hidden transition-transform duration-300 ${hidden ? "translate-y-full" : "translate-y-0"}`}>
       <div className="relative flex h-16 items-center justify-around px-2">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;

@@ -16,11 +16,26 @@ import {
 import * as Tabs from "@radix-ui/react-tabs";
 import { getArticle, getRelatedArticles } from "@/api/articles";
 import { ArticleCard } from "@/components/article/ArticleCard";
+import { MarkdownRenderer } from "@/components/article/MarkdownRenderer";
 import { useReadHistory } from "@/hooks/useReadHistory";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { ArticlePageSkeleton } from "./ArticlePageSkeleton";
+import { useReadingStore } from "@/stores/readingStore";
+
+function estimateReadingTime(article: { aiSummary?: string | null; detailedSummary?: string | null; fullText?: string | null; summary?: string | null }): number {
+  // Use the longest available content field (not sum of all)
+  const candidates = [article.fullText, article.detailedSummary, article.aiSummary, article.summary].filter(Boolean) as string[];
+  const text = candidates.reduce((a, b) => (a.length >= b.length ? a : b), "");
+  if (!text) return 1;
+
+  const chineseChars = (text.match(/[\u4e00-\u9fff]/g) || []).length;
+  const englishWords = text.replace(/[\u4e00-\u9fff]/g, "").split(/\s+/).filter(Boolean).length;
+
+  const minutes = chineseChars / 400 + englishWords / 200;
+  return Math.max(1, Math.round(minutes));
+}
 
 export default function ArticlePage() {
   const { id } = useParams<{ id: string }>();
@@ -29,6 +44,9 @@ export default function ArticlePage() {
   const locale = i18n.language === "zh" ? "zh" : "en";
   const [agentsExpanded, setAgentsExpanded] = useState(false);
   const [activeTab, setActiveTab] = useState("summary");
+  const [tabDirection, setTabDirection] = useState<"left" | "right">("right");
+  const tabOrder = ["summary", "detailed", "fulltext", "analysis"];
+  const [readProgress, setReadProgress] = useState(0);
 
   // SSE streaming state for analysis tab
   const [analysisContent, setAnalysisContent] = useState("");
@@ -36,6 +54,27 @@ export default function ArticlePage() {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [analysisLoaded, setAnalysisLoaded] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  const { fontSize, lineSpacing, contentWidth } = useReadingStore();
+
+  const widthClass = {
+    narrow: "max-w-[620px]",
+    default: "max-w-[720px]",
+    wide: "max-w-[840px]",
+  }[contentWidth];
+
+  const proseClass = {
+    sm: "prose-sm",
+    base: "prose-base",
+    lg: "prose-lg",
+    xl: "prose-xl",
+  }[fontSize];
+
+  const spacingClass = {
+    normal: "leading-normal",
+    relaxed: "leading-relaxed",
+    loose: "leading-loose",
+  }[lineSpacing];
 
   const { isRead, markRead } = useReadHistory();
 
@@ -132,6 +171,7 @@ export default function ArticlePage() {
                 setAnalysisContent(fullContent);
               } else if (event.type === "complete") {
                 setAnalysisLoaded(true);
+                setAnalysisLoading(false);
               } else if (event.type === "error") {
                 setAnalysisError(event.message ?? "Unknown error");
               }
@@ -158,6 +198,24 @@ export default function ArticlePage() {
       streamAnalysis();
     }
   }, [activeTab, analysisLoaded, analysisLoading, streamAnalysis]);
+
+  // Reading progress bar scroll listener
+  useEffect(() => {
+    let ticking = false;
+    const onScroll = () => {
+      if (!ticking) {
+        requestAnimationFrame(() => {
+          const scrollHeight = document.documentElement.scrollHeight - window.innerHeight;
+          const progress = scrollHeight > 0 ? Math.min(window.scrollY / scrollHeight, 1) : 0;
+          setReadProgress(progress);
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Cleanup abort on unmount
   useEffect(() => {
@@ -188,7 +246,12 @@ export default function ArticlePage() {
     "border-b-2 border-transparent px-4 py-2 text-sm font-medium text-muted-foreground transition-colors data-[state=active]:border-primary data-[state=active]:text-primary";
 
   return (
-    <article className="mx-auto max-w-[720px]">
+    <>
+    <div
+      className="fixed top-0 left-0 z-[60] h-0.5 bg-primary transition-[width] duration-150"
+      style={{ width: `${readProgress * 100}%` }}
+    />
+    <article className={cn("mx-auto", widthClass)}>
       {/* Sticky top bar */}
       <div className="sticky top-0 z-10 -mx-4 mb-6 flex items-center justify-between border-b border-border bg-background/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <button
@@ -225,6 +288,8 @@ export default function ArticlePage() {
           <Clock className="h-3.5 w-3.5" />
           {timeAgo(article.publishedAt, locale)}
         </span>
+        <span className="text-muted-foreground/60">·</span>
+        <span>{t("article.readTime", { min: estimateReadingTime(article) })}</span>
         {article.hasMarketImpact && (
           <span
             className="flex items-center gap-1 text-amber-500 dark:text-amber-400"
@@ -292,7 +357,15 @@ export default function ArticlePage() {
       )}
 
       {/* Content tabs */}
-      <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
+      <Tabs.Root
+        value={activeTab}
+        onValueChange={(val) => {
+          const oldIndex = tabOrder.indexOf(activeTab);
+          const newIndex = tabOrder.indexOf(val);
+          setTabDirection(newIndex > oldIndex ? "right" : "left");
+          setActiveTab(val);
+        }}
+      >
         <Tabs.List className="mb-6 flex gap-1 border-b border-border">
           <Tabs.Trigger value="summary" className={tabTriggerClass}>
             {t("article.summary")}
@@ -313,69 +386,77 @@ export default function ArticlePage() {
 
         <Tabs.Content
           value="summary"
-          className="prose prose-sm dark:prose-invert max-w-none"
+          className={cn("prose dark:prose-invert max-w-none", proseClass, spacingClass)}
         >
-          <p className="text-foreground leading-relaxed">{article.aiSummary ?? article.summary}</p>
+          <div key={activeTab} className={tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left"}>
+            <p className="text-foreground leading-relaxed">{article.aiSummary ?? article.summary}</p>
+          </div>
         </Tabs.Content>
 
         <Tabs.Content
           value="detailed"
-          className="prose prose-sm dark:prose-invert max-w-none"
+          className={cn("prose dark:prose-invert max-w-none", proseClass, spacingClass)}
         >
-          <p className="text-foreground leading-relaxed">
-            {article.detailedSummary ?? article.summary}
-          </p>
+          <div key={activeTab} className={tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left"}>
+            <p className="text-foreground leading-relaxed">
+              {article.detailedSummary ?? article.summary}
+            </p>
+          </div>
         </Tabs.Content>
 
         <Tabs.Content
           value="fulltext"
-          className="prose prose-sm dark:prose-invert max-w-none"
+          className={cn("prose dark:prose-invert max-w-none", proseClass, spacingClass)}
         >
-          {article.fullText ? (
-            <MarkdownRenderer content={article.fullText} />
-          ) : (
-            <p className="text-muted-foreground py-8 text-center text-sm">
-              {t("article.fullTextEmpty", "暂无全文内容")}
-            </p>
-          )}
+          <div key={activeTab} className={tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left"}>
+            {article.fullText ? (
+              <MarkdownRenderer content={article.fullText} />
+            ) : (
+              <p className="text-muted-foreground py-8 text-center text-sm">
+                {t("article.fullTextEmpty", "暂无全文内容")}
+              </p>
+            )}
+          </div>
         </Tabs.Content>
 
         <Tabs.Content value="analysis" className="min-h-[200px]">
-          {analysisError && (
-            <div className="rounded-md border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/50 p-4 mb-4">
-              <p className="text-sm text-red-600 dark:text-red-400">
-                {analysisError}
-              </p>
-              <button
-                onClick={() => {
-                  setAnalysisError(null);
-                  setAnalysisLoaded(false);
-                  streamAnalysis();
-                }}
-                className="mt-2 text-sm text-red-600 dark:text-red-400 underline hover:no-underline"
-              >
-                {t("common.retry")}
-              </button>
-            </div>
-          )}
-          {analysisContent ? (
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <MarkdownRenderer content={analysisContent} />
-            </div>
-          ) : analysisLoading ? (
-            <div className="flex items-center justify-center py-12 gap-2">
-              <Loader2 className="h-5 w-5 animate-spin text-primary" />
-              <span className="text-sm text-muted-foreground">
-                {t("article.aiAnalyzing", "AI analyzing...")}
-              </span>
-            </div>
-          ) : null}
-          {analysisLoading && analysisContent && (
-            <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {t("article.generating", "Generating...")}
-            </div>
-          )}
+          <div key={activeTab} className={tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left"}>
+            {analysisError && (
+              <div className="rounded-md border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/50 p-4 mb-4">
+                <p className="text-sm text-red-600 dark:text-red-400">
+                  {analysisError}
+                </p>
+                <button
+                  onClick={() => {
+                    setAnalysisError(null);
+                    setAnalysisLoaded(false);
+                    streamAnalysis();
+                  }}
+                  className="mt-2 text-sm text-red-600 dark:text-red-400 underline hover:no-underline"
+                >
+                  {t("common.retry")}
+                </button>
+              </div>
+            )}
+            {analysisContent ? (
+              <div className={cn("prose dark:prose-invert max-w-none", proseClass, spacingClass)}>
+                <MarkdownRenderer content={analysisContent} />
+              </div>
+            ) : analysisLoading ? (
+              <div className="flex items-center justify-center py-12 gap-2">
+                <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                <span className="text-sm text-muted-foreground">
+                  {t("article.aiAnalyzing", "AI analyzing...")}
+                </span>
+              </div>
+            ) : null}
+            {analysisLoading && analysisContent && (
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {t("article.generating", "Generating...")}
+              </div>
+            )}
+          </div>
         </Tabs.Content>
       </Tabs.Root>
 
@@ -430,190 +511,6 @@ export default function ArticlePage() {
         </div>
       )}
     </article>
+    </>
   );
-}
-
-/**
- * Simple Markdown renderer that handles headers, bold, italic, lists, and paragraphs.
- * No external markdown library needed.
- */
-function MarkdownRenderer({ content }: { content: string }) {
-  const lines = content.split("\n");
-  const elements: React.ReactNode[] = [];
-  let listItems: string[] = [];
-  let listType: "ul" | "ol" | null = null;
-
-  const flushList = () => {
-    if (listItems.length > 0 && listType) {
-      const Tag = listType;
-      elements.push(
-        <Tag key={`list-${elements.length}`} className={listType === "ul" ? "list-disc pl-5 my-2" : "list-decimal pl-5 my-2"}>
-          {listItems.map((item, i) => (
-            <li key={i}>
-              <InlineMarkdown text={item} />
-            </li>
-          ))}
-        </Tag>
-      );
-      listItems = [];
-      listType = null;
-    }
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? "";
-
-    // Unordered list
-    const ulMatch = line.match(/^[-*]\s+(.+)/);
-    if (ulMatch?.[1]) {
-      if (listType !== "ul") flushList();
-      listType = "ul";
-      listItems.push(ulMatch[1]);
-      continue;
-    }
-
-    // Ordered list
-    const olMatch = line.match(/^\d+\.\s+(.+)/);
-    if (olMatch?.[1]) {
-      if (listType !== "ol") flushList();
-      listType = "ol";
-      listItems.push(olMatch[1]);
-      continue;
-    }
-
-    flushList();
-
-    // Block-level image: ![alt](url)
-    const imgMatch = line.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
-    if (imgMatch) {
-      elements.push(
-        <figure key={i} className="my-4">
-          <img
-            src={imgMatch[2]}
-            alt={imgMatch[1]}
-            className="max-w-full rounded-lg"
-            loading="lazy"
-          />
-          {imgMatch[1] && (
-            <figcaption className="text-muted-foreground mt-1 text-center text-xs italic">
-              {imgMatch[1]}
-            </figcaption>
-          )}
-        </figure>
-      );
-      continue;
-    }
-
-    // Block-level link card: [text](url) as the only content on the line
-    const blockLinkMatch = line.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)\.?$/);
-    if (blockLinkMatch) {
-      const linkText = blockLinkMatch[1];
-      const linkUrl = blockLinkMatch[2];
-      let domain = "";
-      try { domain = new URL(linkUrl!).hostname.replace(/^www\./, ""); } catch { /* */ }
-      elements.push(
-        <a
-          key={i}
-          href={linkUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="border-border/60 bg-muted/30 hover:bg-muted/60 my-3 flex items-center gap-3 rounded-lg border px-4 py-3 no-underline transition-colors"
-        >
-          <div className="bg-primary/10 text-primary flex h-9 w-9 shrink-0 items-center justify-center rounded-md">
-            <ExternalLink className="h-4 w-4" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-foreground truncate text-sm font-medium">{linkText}</div>
-            <div className="text-muted-foreground truncate text-xs">{domain}</div>
-          </div>
-        </a>
-      );
-      continue;
-    }
-
-    // Headers
-    if (line.startsWith("### ")) {
-      elements.push(
-        <h3 key={i} className="text-base font-bold mt-5 mb-2">
-          <InlineMarkdown text={line.slice(4)} />
-        </h3>
-      );
-    } else if (line.startsWith("## ")) {
-      elements.push(
-        <h2 key={i} className="text-lg font-bold mt-6 mb-2">
-          <InlineMarkdown text={line.slice(3)} />
-        </h2>
-      );
-    } else if (line.startsWith("# ")) {
-      elements.push(
-        <h1 key={i} className="text-xl font-bold mt-6 mb-3">
-          <InlineMarkdown text={line.slice(2)} />
-        </h1>
-      );
-    } else if (line.trim() === "") {
-      // skip empty lines
-    } else {
-      elements.push(
-        <p key={i} className="my-2 leading-relaxed">
-          <InlineMarkdown text={line} />
-        </p>
-      );
-    }
-  }
-
-  flushList();
-
-  return <>{elements}</>;
-}
-
-/** Handles **bold**, *italic*, ![alt](url) images, and [text](url) links. */
-function InlineMarkdown({ text }: { text: string }) {
-  const parts: React.ReactNode[] = [];
-  // Order matters: images first, then links, then bold, then italic
-  const regex = /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\((https?:\/\/[^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*)/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    if (match[3]) {
-      // Inline image: ![alt](url)
-      parts.push(
-        <img
-          key={match.index}
-          src={match[3]}
-          alt={match[2]}
-          className="my-2 inline-block max-w-full rounded-lg"
-          loading="lazy"
-        />
-      );
-    } else if (match[5]) {
-      // Inline link: [text](url)
-      parts.push(
-        <a
-          key={match.index}
-          href={match[5]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-primary hover:text-primary/80 inline-flex items-center gap-0.5 underline underline-offset-2"
-        >
-          {match[4]}
-          <ExternalLink className="inline h-3 w-3 shrink-0" />
-        </a>
-      );
-    } else if (match[6]) {
-      parts.push(<strong key={match.index}>{match[6]}</strong>);
-    } else if (match[7]) {
-      parts.push(<em key={match.index}>{match[7]}</em>);
-    }
-    lastIndex = match.index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return <>{parts}</>;
 }
