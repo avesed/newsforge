@@ -42,7 +42,7 @@ export function ArticleList({ category }: ArticleListProps) {
   const firstPageSize = data?.pages[0]?.articles.length ?? 0;
   const animateUpTo = useMemo(() => firstPageSize, [firstPageSize]);
 
-  const { containerRef, pullDistance, isRefreshing } = usePullToRefresh({
+  const { containerRef, indicatorRef, isRefreshing } = usePullToRefresh({
     onRefresh: async () => { await refetch(); },
   });
 
@@ -98,24 +98,20 @@ export function ArticleList({ category }: ArticleListProps) {
 
   return (
     <div ref={containerRef}>
-      {/* Pull-to-refresh indicator */}
-      {(pullDistance > 0 || isRefreshing) && (
-        <div
-          className="flex items-center justify-center overflow-hidden transition-[height] duration-200"
-          style={{ height: `${pullDistance}px` }}
-        >
-          <Loader2
-            className={cn(
-              "h-5 w-5 text-primary transition-transform duration-200",
-              isRefreshing && "animate-spin"
-            )}
-            style={{
-              transform: isRefreshing ? undefined : `rotate(${pullDistance * 3}deg)`,
-              opacity: Math.min(pullDistance / 60, 1),
-            }}
-          />
-        </div>
-      )}
+      {/* Pull-to-refresh indicator — height controlled by DOM ref, not React state */}
+      <div
+        ref={indicatorRef}
+        className="flex items-center justify-center overflow-hidden"
+        style={{ height: 0, opacity: 0, transition: "height 200ms ease-out, opacity 150ms ease-out" }}
+      >
+        <Loader2
+          data-pull-icon
+          className={cn(
+            "h-5 w-5 text-primary",
+            isRefreshing && "animate-spin"
+          )}
+        />
+      </div>
       <div className="flex flex-col">
         {articles.map((article, index) => {
           const isHero = isMobile && index === 0 && !!article.imageUrl;

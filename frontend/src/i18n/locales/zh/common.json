@@ -322,7 +322,9 @@
     },
     "storyType": "\u7c7b\u578b",
     "keyEntities": "\u6838\u5fc3\u5b9e\u4f53",
-    "badge": "\u6545\u4e8b\u7ebf"
+    "badge": "\u6545\u4e8b\u7ebf",
+    "sortRecent": "\u6700\u65b0",
+    "sortPopular": "\u70ed\u95e8"
   },
   "articles": {
     "related": "\u76f8\u5173\u6587\u7ae0"

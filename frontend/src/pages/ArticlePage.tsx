@@ -312,7 +312,7 @@ export default function ArticlePage() {
   const readingTime = estimateReadingTime(article);
 
   return (
-    <>
+    <div className="animate-page-enter">
     <div
       className="fixed top-0 left-0 z-[60] h-0.5 bg-primary transition-[width] duration-150"
       style={{ width: `${readProgress * 100}%` }}
@@ -708,6 +708,6 @@ export default function ArticlePage() {
         </div>
       )}
     </article>
-    </>
+    </div>
   );
 }

@@ -47,11 +47,12 @@ def _story_to_response(
 async def list_stories(
     category: str | None = Query(None, description="Filter by category"),
     status: str | None = Query(None, description="Filter by status"),
+    sort: str = Query("recent", description="Sort order: recent or popular"),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """List active stories sorted by article_count desc."""
-    logger.debug("list_stories category=%s status=%s limit=%d", category, status, limit)
+    """List active stories sorted by last_updated_at (recent) or article_count (popular)."""
+    logger.debug("list_stories category=%s status=%s sort=%s limit=%d", category, status, sort, limit)
     query = (
         select(NewsStory, Article.title, Article.ai_summary)
         .outerjoin(Article, NewsStory.representative_article_id == Article.id)
@@ -64,7 +65,12 @@ async def list_stories(
     if status:
         query = query.where(NewsStory.status == status)
 
-    query = query.order_by(NewsStory.article_count.desc()).limit(limit)
+    if sort == "popular":
+        query = query.order_by(NewsStory.article_count.desc())
+    else:
+        query = query.order_by(NewsStory.last_updated_at.desc())
+
+    query = query.limit(limit)
 
     result = await db.execute(query)
     rows = result.all()

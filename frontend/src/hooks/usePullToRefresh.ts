@@ -8,7 +8,7 @@ interface UsePullToRefreshOptions {
 
 interface UsePullToRefreshReturn {
   containerRef: React.RefObject<HTMLDivElement>;
-  pullDistance: number;
+  indicatorRef: React.RefObject<HTMLDivElement>;
   isRefreshing: boolean;
 }
 
@@ -18,14 +18,29 @@ export function usePullToRefresh({
   maxPull = 100,
 }: UsePullToRefreshOptions): UsePullToRefreshReturn {
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pullDistance, setPullDistance] = useState(0);
+  const indicatorRef = useRef<HTMLDivElement>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
   const startYRef = useRef(0);
   const startXRef = useRef(0);
   const pullingRef = useRef(false);
   const pullDistanceRef = useRef(0);
   const refreshingRef = useRef(false);
   const directionLockedRef = useRef(false);
+
+  // Direct DOM update — no React re-render per frame
+  const updateIndicator = useCallback((distance: number) => {
+    const el = indicatorRef.current;
+    if (!el) return;
+    el.style.height = `${distance}px`;
+    el.style.opacity = distance > 0 ? "1" : "0";
+    // Rotate the spinner icon inside
+    const icon = el.querySelector("[data-pull-icon]") as HTMLElement | null;
+    if (icon) {
+      icon.style.transform = `rotate(${distance * 3}deg)`;
+      icon.style.opacity = `${Math.min(distance / threshold, 1)}`;
+    }
+  }, [threshold]);
 
   const handleTouchStart = useCallback((e: TouchEvent) => {
     const touch = e.touches[0];
@@ -45,10 +60,9 @@ export function usePullToRefresh({
     const deltaY = touch.clientY - startYRef.current;
     const deltaX = Math.abs(touch.clientX - startXRef.current);
 
-    // First significant movement: lock direction
+    // Lock direction on first significant movement
     if (!directionLockedRef.current && (deltaX > 5 || Math.abs(deltaY) > 5)) {
       directionLockedRef.current = true;
-      // Horizontal movement dominates — abort pull gesture
       if (deltaX > Math.abs(deltaY)) {
         pullingRef.current = false;
         return;
@@ -59,13 +73,13 @@ export function usePullToRefresh({
       e.preventDefault();
       const distance = Math.min(deltaY * 0.4, maxPull);
       pullDistanceRef.current = distance;
-      setPullDistance(distance);
+      updateIndicator(distance);
     } else {
       pullingRef.current = false;
       pullDistanceRef.current = 0;
-      setPullDistance(0);
+      updateIndicator(0);
     }
-  }, [maxPull]);
+  }, [maxPull, updateIndicator]);
 
   const handleTouchEnd = useCallback(async () => {
     if (!pullingRef.current || refreshingRef.current) return;
@@ -74,26 +88,28 @@ export function usePullToRefresh({
     if (pullDistanceRef.current >= threshold) {
       refreshingRef.current = true;
       setIsRefreshing(true);
-      setPullDistance(threshold * 0.6);
+      // Snap indicator to loading position
+      const snapHeight = threshold * 0.6;
+      updateIndicator(snapHeight);
       try {
         await onRefresh();
       } finally {
         refreshingRef.current = false;
         setIsRefreshing(false);
         pullDistanceRef.current = 0;
-        setPullDistance(0);
+        updateIndicator(0);
       }
     } else {
       pullDistanceRef.current = 0;
-      setPullDistance(0);
+      updateIndicator(0);
     }
-  }, [threshold, onRefresh]);
+  }, [threshold, onRefresh, updateIndicator]);
 
   const handleTouchCancel = useCallback(() => {
     pullingRef.current = false;
     pullDistanceRef.current = 0;
-    setPullDistance(0);
-  }, []);
+    updateIndicator(0);
+  }, [updateIndicator]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -112,5 +128,5 @@ export function usePullToRefresh({
     };
   }, [handleTouchStart, handleTouchMove, handleTouchEnd, handleTouchCancel]);
 
-  return { containerRef, pullDistance, isRefreshing };
+  return { containerRef, indicatorRef, isRefreshing };
 }

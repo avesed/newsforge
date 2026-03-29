@@ -27,9 +27,12 @@ export interface StoryDetail extends NewsStory {
   timeline: TimelineEntry[] | null;
 }
 
-export async function listStories(category?: string): Promise<NewsStory[]> {
+export async function listStories(
+  category?: string,
+  sort: "recent" | "popular" = "recent",
+): Promise<NewsStory[]> {
   const response = await apiClient.get<NewsStory[]>("/stories/", {
-    params: { limit: 50, ...(category ? { category } : {}) },
+    params: { limit: 50, sort, ...(category ? { category } : {}) },
   });
   return response.data;
 }

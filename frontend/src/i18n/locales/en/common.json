@@ -322,7 +322,9 @@
     },
     "storyType": "Type",
     "keyEntities": "Key Entities",
-    "badge": "Story"
+    "badge": "Story",
+    "sortRecent": "Recent",
+    "sortPopular": "Popular"
   },
   "articles": {
     "related": "Related Articles"
