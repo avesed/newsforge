@@ -7,6 +7,9 @@ import { ArticleCard } from "./ArticleCard";
 import { ArticleListSkeleton } from "./ArticleCardSkeleton";
 import { EmptyState } from "@/components/EmptyState";
 import { useReadHistory } from "@/hooks/useReadHistory";
+import { useIsMobile } from "@/hooks/useIsMobile";
+import { usePullToRefresh } from "@/hooks/usePullToRefresh";
+import { cn } from "@/lib/utils";
 
 interface ArticleListProps {
   category?: string | undefined;
@@ -15,6 +18,7 @@ interface ArticleListProps {
 export function ArticleList({ category }: ArticleListProps) {
   const { t } = useTranslation();
   const { isRead, markRead } = useReadHistory();
+  const isMobile = useIsMobile();
   const loadMoreRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -37,6 +41,10 @@ export function ArticleList({ category }: ArticleListProps) {
   // Must be before any early returns to satisfy Rules of Hooks
   const firstPageSize = data?.pages[0]?.articles.length ?? 0;
   const animateUpTo = useMemo(() => firstPageSize, [firstPageSize]);
+
+  const { containerRef, pullDistance, isRefreshing } = usePullToRefresh({
+    onRefresh: async () => { await refetch(); },
+  });
 
   const handleObserver = useCallback(
     (entries: IntersectionObserverEntry[]) => {
@@ -89,33 +97,63 @@ export function ArticleList({ category }: ArticleListProps) {
   }
 
   return (
-    <div className="flex flex-col">
-      {articles.map((article, index) => (
+    <div ref={containerRef}>
+      {/* Pull-to-refresh indicator */}
+      {(pullDistance > 0 || isRefreshing) && (
         <div
-          key={article.id}
-          className={index < animateUpTo ? "animate-stagger-item" : undefined}
-          style={index < animateUpTo ? { animationDelay: `${Math.min(index * 50, 500)}ms` } : undefined}
+          className="flex items-center justify-center overflow-hidden transition-[height] duration-200"
+          style={{ height: `${pullDistance}px` }}
         >
-          <ArticleCard article={article} isRead={isRead(article.id)} onMarkRead={(id) => void markRead(id)} />
+          <Loader2
+            className={cn(
+              "h-5 w-5 text-primary transition-transform duration-200",
+              isRefreshing && "animate-spin"
+            )}
+            style={{
+              transform: isRefreshing ? undefined : `rotate(${pullDistance * 3}deg)`,
+              opacity: Math.min(pullDistance / 60, 1),
+            }}
+          />
         </div>
-      ))}
-      <div ref={loadMoreRef} className="py-4 text-center">
-        {isFetchingNextPage && (
-          <div className="flex items-center justify-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">
-              {t("article.loading")}
-            </span>
+      )}
+      <div className="flex flex-col">
+        {articles.map((article, index) => {
+          const isHero = isMobile && index === 0 && !!article.imageUrl;
+          // Skip stagger animation on hero card — it has its own visual presence
+          const shouldAnimate = index < animateUpTo && !isHero;
+          return (
+            <div
+              key={article.id}
+              className={shouldAnimate ? "animate-stagger-item" : undefined}
+              style={shouldAnimate ? { animationDelay: `${Math.min(index * 50, 500)}ms` } : undefined}
+            >
+              <ArticleCard
+                article={article}
+                isRead={isRead(article.id)}
+                onMarkRead={(id) => void markRead(id)}
+                variant={isHero ? "hero" : "standard"}
+              />
+            </div>
+          );
+        })}
+        <div ref={loadMoreRef} className="py-4 text-center">
+          {isFetchingNextPage && (
+            <div className="flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">
+                {t("article.loading")}
+              </span>
+            </div>
+          )}
+        </div>
+        {!hasNextPage && articles.length > 0 && !isFetchingNextPage && (
+          <div className="flex items-center gap-3 py-6 text-xs text-muted-foreground">
+            <div className="h-px flex-1 bg-border" />
+            <span>{t("article.noMore")}</span>
+            <div className="h-px flex-1 bg-border" />
           </div>
         )}
       </div>
-      {!hasNextPage && articles.length > 0 && !isFetchingNextPage && (
-        <div className="flex items-center gap-3 py-6 text-xs text-muted-foreground">
-          <div className="h-px flex-1 bg-border" />
-          <span>{t("article.noMore")}</span>
-          <div className="h-px flex-1 bg-border" />
-        </div>
-      )}
     </div>
   );
 }

@@ -4,9 +4,11 @@ import { CategorySidebar } from "@/components/category/CategorySidebar";
 import { ArticleList } from "@/components/article/ArticleList";
 import { TrendingStories } from "@/components/stories/TrendingStories";
 import { useCategoryStore } from "@/stores/categoryStore";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 export default function HomePage() {
   const { activeCategory, setActiveCategory } = useCategoryStore();
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     setActiveCategory(null);
@@ -32,7 +34,7 @@ export default function HomePage() {
           />
         </div>
 
-        <TrendingStories />
+        {!isMobile && <TrendingStories />}
         <ArticleList category={activeCategory ?? undefined} />
       </div>
     </div>

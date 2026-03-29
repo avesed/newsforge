@@ -5,6 +5,7 @@ import { Search, Sun, Moon, LogIn, LogOut, Settings, Shield, History } from "luc
 import { useThemeStore } from "@/stores/themeStore";
 import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
+import { safeSetItem } from "@/lib/storage";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 const AVATAR_COLORS = [
@@ -26,13 +27,31 @@ export function Header() {
   const { theme, toggle: toggleTheme } = useThemeStore();
   const { user, logout } = useAuthStore();
   const [scrolled, setScrolled] = useState(false);
+  const [headerHidden, setHeaderHidden] = useState(false);
 
   useEffect(() => {
-    const handleScroll = () => {
-      setScrolled(window.scrollY > 0);
+    let lastScrollY = window.scrollY;
+    let ticking = false;
+
+    const onScroll = () => {
+      if (!ticking) {
+        requestAnimationFrame(() => {
+          const currentY = window.scrollY;
+          setScrolled(currentY > 0);
+          if (currentY > lastScrollY && currentY > 100) {
+            setHeaderHidden(true);
+          } else if (currentY < lastScrollY) {
+            setHeaderHidden(false);
+          }
+          lastScrollY = currentY;
+          ticking = false;
+        });
+        ticking = true;
+      }
     };
-    window.addEventListener("scroll", handleScroll, { passive: true });
-    return () => window.removeEventListener("scroll", handleScroll);
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
   const handleLogout = async () => {
@@ -43,16 +62,16 @@ export function Header() {
   const toggleLang = () => {
     const next = i18n.language === "zh" ? "en" : "zh";
     void i18n.changeLanguage(next);
-    localStorage.setItem("language", next);
+    safeSetItem("language", next);
   };
 
   return (
-    <header className={cn("sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur transition-shadow", scrolled && "shadow-sm")}>
+    <header className={cn("sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur transition-all duration-300", scrolled && "shadow-sm", headerHidden && "lg:translate-y-0 -translate-y-full")}>
       <div className="mx-auto max-w-6xl px-4">
         {/* Top bar */}
-        <div className="flex h-14 items-center justify-between">
+        <div className="flex h-12 lg:h-14 items-center justify-between">
           <Link to="/" className="flex items-center gap-2">
-            <span className="text-xl font-bold text-primary">NewsForge</span>
+            <span className="text-lg lg:text-xl font-bold text-primary">NewsForge</span>
           </Link>
 
           <div className="flex items-center gap-2">

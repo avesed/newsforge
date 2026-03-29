@@ -274,7 +274,7 @@ export function MarkdownRenderer({ content }: { content: string }) {
           <img
             src={imgMatch[2]}
             alt={imgMatch[1]}
-            className="max-w-full rounded-lg"
+            className="article-img-bleed max-w-full rounded-lg"
             loading="lazy"
           />
           {imgMatch[1] && (

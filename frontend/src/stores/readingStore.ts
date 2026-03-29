@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { safeGetItem, safeSetItem } from "@/lib/storage";
 
 type FontSize = "sm" | "base" | "lg" | "xl";
 type LineSpacing = "normal" | "relaxed" | "loose";
@@ -19,22 +20,6 @@ interface ReadingActions {
 const FONT_SIZES: FontSize[] = ["sm", "base", "lg", "xl"];
 const LINE_SPACINGS: LineSpacing[] = ["normal", "relaxed", "loose"];
 const CONTENT_WIDTHS: ContentWidth[] = ["narrow", "default", "wide"];
-
-function safeGetItem(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeSetItem(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // Silently fail in restricted environments (e.g., Safari private mode)
-  }
-}
 
 function getInitialFontSize(): FontSize {
   const stored = safeGetItem("reading-font-size");

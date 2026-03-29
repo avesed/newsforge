@@ -19,6 +19,7 @@ const AdminConsumersPage = lazy(() => import("@/pages/admin/AdminConsumersPage")
 const AdminLLMPage = lazy(() => import("@/pages/admin/AdminLLMPage"));
 const AdminPipelinePage = lazy(() => import("@/pages/admin/AdminPipelinePage"));
 const ReadingHistoryPage = lazy(() => import("@/pages/ReadingHistoryPage"));
+const StoriesPage = lazy(() => import("./pages/StoriesPage"));
 const StoryDetailPage = lazy(() => import("@/pages/StoryDetailPage"));
 
 function LoadingFallback() {
@@ -53,6 +54,7 @@ export default function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/news/:category" element={<CategoryPage />} />
             <Route path="/article/:id" element={<ArticlePage />} />
+            <Route path="/stories" element={<StoriesPage />} />
             <Route path="/stories/:id" element={<StoryDetailPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/login" element={<LoginPage />} />

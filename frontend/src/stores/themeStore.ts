@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { safeGetItem, safeSetItem } from "@/lib/storage";
 
 type Theme = "light" | "dark";
 
@@ -12,7 +13,7 @@ interface ThemeActions {
 }
 
 function getInitialTheme(): Theme {
-  const stored = localStorage.getItem("theme");
+  const stored = safeGetItem("theme");
   if (stored === "light" || stored === "dark") {
     return stored;
   }
@@ -29,7 +30,7 @@ function applyTheme(theme: Theme): void {
   } else {
     root.classList.remove("dark");
   }
-  localStorage.setItem("theme", theme);
+  safeSetItem("theme", theme);
 }
 
 const initialTheme = getInitialTheme();

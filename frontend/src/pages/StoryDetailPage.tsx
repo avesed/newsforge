@@ -17,6 +17,7 @@ import { CategoryTag } from "@/components/category/CategoryTag";
 import { StatusBadge } from "@/components/stories/StatusBadge";
 import { StoryTimeline } from "@/components/stories/StoryTimeline";
 import { useReadHistory } from "@/hooks/useReadHistory";
+import { useSwipeBack } from "@/hooks/useSwipeBack";
 
 export default function StoryDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +25,7 @@ export default function StoryDetailPage() {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === "zh" ? "zh-CN" : "en-US";
   const { isRead } = useReadHistory();
+  useSwipeBack();
 
   const { data: story, isLoading, isError } = useQuery({
     queryKey: ["storyDetail", id],

@@ -1,6 +1,38 @@
 import { Skeleton } from "@/components/ui/Skeleton";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 export function ArticlePageSkeleton() {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <article className="mx-auto max-w-[720px]">
+        {/* Hero placeholder */}
+        <div className="-mx-4 -mt-4">
+          <div style={{ aspectRatio: "16/9" }}>
+            <Skeleton className="h-full w-full rounded-none" />
+          </div>
+        </div>
+        {/* Tags */}
+        <div className="mt-3 flex items-center gap-1.5 mb-4">
+          <Skeleton className="h-5 w-16 rounded-full" />
+          <Skeleton className="h-5 w-14 rounded-full" />
+        </div>
+        {/* Content */}
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-11/12" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-4/5" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-10/12" />
+          <Skeleton className="h-4 w-3/5" />
+        </div>
+      </article>
+    );
+  }
+
   return (
     <article className="mx-auto max-w-[720px]">
       {/* Sticky top bar: back button + source link */}

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { User } from "@/types";
 import * as authApi from "@/api/auth";
+import { safeGetItem, safeSetItem, safeRemoveItem } from "@/lib/storage";
 
 interface AuthState {
   user: User | null;
@@ -19,12 +20,12 @@ interface AuthActions {
 
 export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
   user: null,
-  token: localStorage.getItem("access_token"),
+  token: safeGetItem("access_token"),
   isLoading: true,
 
   login: async (email, password) => {
     const response = await authApi.login({ email, password });
-    localStorage.setItem("access_token", response.accessToken);
+    safeSetItem("access_token", response.accessToken);
     set({ token: response.accessToken });
     const user = await authApi.getMe();
     set({ user });
@@ -32,7 +33,7 @@ export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
 
   register: async (email, password, displayName) => {
     const response = await authApi.register({ email, password, displayName });
-    localStorage.setItem("access_token", response.accessToken);
+    safeSetItem("access_token", response.accessToken);
     set({ token: response.accessToken });
     const user = await authApi.getMe();
     set({ user });
@@ -44,12 +45,12 @@ export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
     } catch {
       // Ignore logout errors
     }
-    localStorage.removeItem("access_token");
+    safeRemoveItem("access_token");
     set({ user: null, token: null });
   },
 
   initAuth: async () => {
-    const token = localStorage.getItem("access_token");
+    const token = safeGetItem("access_token");
     if (!token) {
       set({ isLoading: false });
       return;
@@ -58,7 +59,7 @@ export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
       const user = await authApi.getMe();
       set({ user, token, isLoading: false });
     } catch {
-      localStorage.removeItem("access_token");
+      safeRemoveItem("access_token");
       set({ user: null, token: null, isLoading: false });
     }
   },

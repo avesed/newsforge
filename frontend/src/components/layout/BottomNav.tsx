@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Home, Grid3X3, Search, Bookmark, Settings } from "lucide-react";
+import { Home, BookOpen, Search, Bookmark, Settings } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
 
 interface NavItem {
@@ -13,7 +13,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { path: "/", icon: Home, labelKey: "nav.home" },
-  { path: "/news/tech", icon: Grid3X3, labelKey: "nav.categories" },
+  { path: "/stories", icon: BookOpen, labelKey: "nav.stories" },
   { path: "/search", icon: Search, labelKey: "nav.search" },
   { path: "/bookmarks", icon: Bookmark, labelKey: "nav.bookmarks", requireAuth: true },
   { path: "/settings", icon: Settings, labelKey: "nav.settings", requireAuth: true },
@@ -24,13 +24,19 @@ export function BottomNav() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuthStore();
-  const [hidden, setHidden] = useState(false);
+  const isArticlePage = location.pathname.startsWith("/article/");
+  const [hidden, setHidden] = useState(isArticlePage);
+
+  useEffect(() => {
+    setHidden(location.pathname.startsWith("/article/"));
+  }, [location.pathname]);
 
   useEffect(() => {
     let lastScrollY = window.scrollY;
     let ticking = false;
 
     const onScroll = () => {
+      if (location.pathname.startsWith("/article/")) return;
       if (!ticking) {
         requestAnimationFrame(() => {
           const currentY = window.scrollY;
@@ -48,7 +54,7 @@ export function BottomNav() {
 
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [location.pathname]);
 
   const handleNavigate = (item: NavItem) => {
     if (item.requireAuth && !user) {
@@ -66,7 +72,7 @@ export function BottomNav() {
   const activeIndex = NAV_ITEMS.findIndex((item) => isActive(item.path));
 
   return (
-    <nav className={`fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur lg:hidden transition-transform duration-300 ${hidden ? "translate-y-full" : "translate-y-0"}`}>
+    <nav className={`fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur shadow-[0_-1px_3px_rgba(0,0,0,0.05)] safe-area-bottom lg:hidden transition-transform duration-300 ${hidden ? "translate-y-full" : "translate-y-0"}`}>
       <div className="relative flex h-16 items-center justify-around px-2">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
@@ -75,6 +81,7 @@ export function BottomNav() {
             <button
               key={item.path}
               onClick={() => handleNavigate(item)}
+              aria-label={t(item.labelKey)}
               className={`flex flex-1 flex-col items-center gap-1 py-1 ${
                 active ? "text-primary" : "text-muted-foreground"
               }`}
@@ -86,10 +93,10 @@ export function BottomNav() {
         })}
         {activeIndex >= 0 && (
           <span
-            className="absolute bottom-0 left-0 h-0.5 rounded-full bg-primary transition-transform duration-200"
+            className="absolute bottom-0 h-1 w-8 rounded-full bg-primary transition-transform duration-200"
             style={{
-              width: `${100 / NAV_ITEMS.length}%`,
-              transform: `translateX(${activeIndex * 100}%)`,
+              left: `${(activeIndex + 0.5) * (100 / NAV_ITEMS.length)}%`,
+              transform: "translateX(-50%)",
             }}
           />
         )}

@@ -11,7 +11,8 @@
     "login": "Login",
     "register": "Register",
     "logout": "Logout",
-    "history": "History"
+    "history": "History",
+    "stories": "Stories"
   },
   "category": {
     "all": "All",
@@ -45,7 +46,10 @@
     "readTime": "{{min}} min read",
     "noMore": "All caught up",
     "read": "read",
-    "markRead": "Mark as read"
+    "markRead": "Mark as read",
+    "valueScore": "Value",
+    "marketImpact": "Market Impact",
+    "agentsExecuted": "Processing agents"
   },
   "auth": {
     "email": "Email",
@@ -305,6 +309,8 @@
   },
   "stories": {
     "trending": "Trending Stories",
+    "allStories": "All Stories",
+    "noStories": "No stories yet",
     "articles": "Related Coverage",
     "detail": "Story Detail",
     "timeline": "Timeline",

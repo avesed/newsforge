@@ -11,7 +11,8 @@
     "login": "\u767b\u5f55",
     "register": "\u6ce8\u518c",
     "logout": "\u9000\u51fa\u767b\u5f55",
-    "history": "\u9605\u8bfb\u5386\u53f2"
+    "history": "\u9605\u8bfb\u5386\u53f2",
+    "stories": "\u6545\u4e8b"
   },
   "category": {
     "all": "\u5168\u90e8",
@@ -45,7 +46,10 @@
     "readTime": "约{{min}}分钟",
     "noMore": "已经看完了",
     "read": "已读",
-    "markRead": "标记已读"
+    "markRead": "标记已读",
+    "valueScore": "价值",
+    "marketImpact": "市场影响",
+    "agentsExecuted": "处理 Agent"
   },
   "auth": {
     "email": "\u90ae\u7bb1",
@@ -305,6 +309,8 @@
   },
   "stories": {
     "trending": "\u70ed\u95e8\u6545\u4e8b\u7ebf",
+    "allStories": "\u6240\u6709\u6545\u4e8b\u7ebf",
+    "noStories": "\u6682\u65e0\u6545\u4e8b\u7ebf",
     "articles": "\u76f8\u5173\u62a5\u9053",
     "detail": "\u6545\u4e8b\u7ebf\u8be6\u60c5",
     "timeline": "\u65f6\u95f4\u7ebf",

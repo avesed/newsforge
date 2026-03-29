@@ -10,13 +10,69 @@ interface ArticleCardProps {
   article: Article;
   isRead?: boolean;
   onMarkRead?: (id: string) => void;
+  variant?: "hero" | "standard";
 }
 
-export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
+export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" }: ArticleCardProps) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === "zh" ? "zh" : "en";
   const navigate = useNavigate();
 
+  /* ── Hero variant ─────────────────────────────────────────── */
+  if (variant === "hero" && article.imageUrl) {
+    return (
+      <Link
+        to={`/article/${article.id}`}
+        className="group block overflow-hidden rounded-xl shadow-sm active:scale-[0.98] active:opacity-90 transition-transform duration-150"
+      >
+        <div className="relative bg-muted" style={{ aspectRatio: "16/10" }}>
+          <img
+            src={article.imageUrl}
+            alt=""
+            className="h-full w-full object-cover"
+            loading="lazy"
+            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+          />
+          {/* Gradient scrim */}
+          <div className="article-hero-gradient absolute inset-0" />
+
+          {/* Category pill top-left */}
+          {article.categories?.[0] && (
+            <span
+              className="absolute left-3 top-3 rounded-full px-2.5 py-0.5 text-xs font-medium text-white/90 backdrop-blur-sm"
+              style={{
+                backgroundColor: `${CATEGORY_COLORS[article.categories[0] as CategorySlug] ?? CATEGORY_COLORS.other}80`,
+              }}
+            >
+              {t(`category.${article.categories[0]}`, article.categories[0])}
+            </span>
+          )}
+
+          {/* Title overlaid on gradient */}
+          <div className="absolute bottom-0 left-0 right-0 p-4">
+            <h3 className="text-lg font-bold leading-snug text-white drop-shadow-sm line-clamp-3">
+              {locale === "zh" && article.titleZh ? article.titleZh : article.title}
+            </h3>
+            <div className="mt-1.5 flex items-center gap-2 text-xs text-white/70">
+              <span className="font-medium">{article.sourceName || "Unknown"}</span>
+              <span>·</span>
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {timeAgo(article.publishedAt, locale)}
+              </span>
+              {article.hasMarketImpact && (
+                <span className="text-amber-400 flex items-center gap-0.5">
+                  <TrendingUp className="h-3 w-3" />
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      </Link>
+    );
+  }
+
+  /* ── Standard variant ─────────────────────────────────────── */
   return (
     <div
       className={cn(
@@ -29,7 +85,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
       <Link
         to={`/article/${article.id}`}
         className={cn(
-          "block px-1 py-4 hover:bg-accent/30 dark:hover:bg-accent/50 transition-colors rounded-sm -mx-1",
+          "block px-1 py-4 hover-effect active:scale-[0.98] active:opacity-90 transition-all duration-150 active:bg-accent/40 rounded-sm -mx-1",
           isRead && "opacity-60"
         )}
       >
@@ -73,14 +129,14 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
         <div className={cn("flex gap-3", article.imageUrl && "flex-row")}>
           <div className="min-w-0 flex-1">
             {/* Title */}
-            <h3 className="font-semibold text-[15px] leading-snug line-clamp-2 mb-1 group-hover:text-primary transition-colors">
+            <h3 className="font-semibold text-base leading-snug line-clamp-2 mb-1 group-hover:text-primary transition-colors">
               {locale === "zh" && article.titleZh ? article.titleZh : article.title}
             </h3>
 
             {/* Summary */}
-            {article.summary && (
+            {(article.aiSummary || article.summary) && (
               <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
-                {article.summary}
+                {article.aiSummary ?? article.summary}
               </p>
             )}
 
@@ -97,7 +153,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
                       color: color,
                     }}
                   >
-                    {cat}
+                    {t(`category.${cat}`, cat)}
                   </span>
                 );
               })}
@@ -110,7 +166,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
                     article.sentimentLabel === "neutral" && "bg-blue-500/10 text-blue-400"
                   )}
                 >
-                  {article.sentimentLabel}
+                  {t(`sentiment.${article.sentimentLabel}`)}
                 </span>
               )}
               {article.storyId && (
@@ -129,7 +185,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
                       navigate(`/stories/${article.storyId}`);
                     }
                   }}
-                  className="inline-flex items-center gap-1 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-500 hover:bg-indigo-500/20 transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[11px] font-medium text-indigo-500 active:bg-indigo-500/20 transition-colors cursor-pointer"
                 >
                   <BookOpen className="h-3 w-3" />
                   {t("stories.badge")}
@@ -143,7 +199,7 @@ export function ArticleCard({ article, isRead, onMarkRead }: ArticleCardProps) {
             <img
               src={article.imageUrl}
               alt=""
-              className="h-[60px] w-[80px] flex-shrink-0 rounded-md object-cover"
+              className="h-[72px] w-[96px] flex-shrink-0 rounded-lg object-cover"
               loading="lazy"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = "none";
