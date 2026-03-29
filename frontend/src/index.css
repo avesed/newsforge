@@ -211,19 +211,6 @@
   padding-left: 1.25em;
 }
 
-/* Drop cap for first paragraph on mobile (fulltext tab only) */
-@media (max-width: 1023px) {
-  .article-fulltext > p:first-of-type::first-letter {
-    float: left;
-    font-size: 3.25em;
-    line-height: 0.8;
-    padding-right: 0.08em;
-    padding-top: 0.05em;
-    font-weight: 700;
-    color: hsl(var(--primary));
-  }
-}
-
 /* Full-bleed images in article body on mobile */
 @media (max-width: 1023px) {
   .article-body .article-img-bleed {
