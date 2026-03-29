@@ -1,11 +1,14 @@
 import { ExternalLink } from "lucide-react";
 
+// Module-level regex — compiled once, reused across renders
+const INLINE_MD_REGEX =
+  /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\((https?:\/\/[^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
+
 /** Handles **bold**, *italic*, `code`, ![alt](url) images, and [text](url) links. */
 function InlineMarkdown({ text }: { text: string }) {
   const parts: React.ReactNode[] = [];
   // Order matters: images first, then links, then bold, then italic, then inline code
-  const regex =
-    /(!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\((https?:\/\/[^)]+)\)|\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
+  const regex = new RegExp(INLINE_MD_REGEX.source, INLINE_MD_REGEX.flags);
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 

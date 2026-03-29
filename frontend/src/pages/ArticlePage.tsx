@@ -381,44 +381,46 @@ export default function ArticlePage() {
           </div>
 
           {/* Category tags + sentiment below hero */}
-          <div className="mt-3 flex flex-wrap items-center gap-1.5 mb-2">
-            {article.categories?.map((cat) => {
-              const color = CATEGORY_COLORS[cat as CategorySlug] ?? CATEGORY_COLORS.other;
-              return (
-                <span
-                  key={cat}
-                  className="rounded-full px-2.5 py-0.5 text-xs font-medium"
-                  style={{ backgroundColor: `${color}20`, color }}
-                >
-                  {t(`category.${cat}`, cat)}
+          {((article.categories && article.categories.length > 0) || article.sentimentLabel || article.valueScore != null || article.hasMarketImpact) && (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5 mb-2">
+              {article.categories?.map((cat) => {
+                const color = CATEGORY_COLORS[cat as CategorySlug] ?? CATEGORY_COLORS.other;
+                return (
+                  <span
+                    key={cat}
+                    className="rounded-full px-2.5 py-0.5 text-xs font-medium"
+                    style={{ backgroundColor: `${color}20`, color }}
+                  >
+                    {t(`category.${cat}`, cat)}
+                  </span>
+                );
+              })}
+              {article.sentimentLabel && (
+                <span className={cn(
+                  "rounded-full px-2 py-0.5 text-xs font-medium",
+                  article.sentimentLabel === "positive" && "bg-green-500/10 text-green-500",
+                  article.sentimentLabel === "negative" && "bg-red-500/10 text-red-500",
+                  article.sentimentLabel === "neutral" && "bg-blue-500/10 text-blue-400"
+                )}>
+                  {t(`sentiment.${article.sentimentLabel}`)}
                 </span>
-              );
-            })}
-            {article.sentimentLabel && (
-              <span className={cn(
-                "rounded-full px-2 py-0.5 text-xs font-medium",
-                article.sentimentLabel === "positive" && "bg-green-500/10 text-green-500",
-                article.sentimentLabel === "negative" && "bg-red-500/10 text-red-500",
-                article.sentimentLabel === "neutral" && "bg-blue-500/10 text-blue-400"
-              )}>
-                {t(`sentiment.${article.sentimentLabel}`)}
-              </span>
-            )}
-            {article.valueScore != null && (
-              <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                {t("article.valueScore", "Value")}: {article.valueScore}
-              </span>
-            )}
-            {article.hasMarketImpact && (
-              <span
-                className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-500 dark:text-amber-400"
-                title={article.marketImpactHint ?? undefined}
-              >
-                <TrendingUp className="h-3 w-3" />
-                {t("article.marketImpact", "Market Impact")}
-              </span>
-            )}
-          </div>
+              )}
+              {article.valueScore != null && (
+                <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                  {t("article.valueScore", "Value")}: {article.valueScore}
+                </span>
+              )}
+              {article.hasMarketImpact && (
+                <span
+                  className="flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-500 dark:text-amber-400"
+                  title={article.marketImpactHint ?? undefined}
+                >
+                  <TrendingUp className="h-3 w-3" />
+                  {t("article.marketImpact", "Market Impact")}
+                </span>
+              )}
+            </div>
+          )}
 
           {/* Separator */}
           <div className="border-b border-border mb-4" />
@@ -555,7 +557,7 @@ export default function ArticlePage() {
       >
         <Tabs.List className={cn(
           "relative mb-6 flex gap-1 border-b border-border",
-          isMobile && isTabSticky && "sticky top-0 z-20 -mx-4 px-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
+          isMobile && isTabSticky && "sticky top-12 z-20 -mx-4 px-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
         )}>
           {/* Animated indicator pill */}
           <span

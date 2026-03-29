@@ -21,27 +21,42 @@ export function usePullToRefresh({
   const [pullDistance, setPullDistance] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const startYRef = useRef(0);
+  const startXRef = useRef(0);
   const pullingRef = useRef(false);
   const pullDistanceRef = useRef(0);
   const refreshingRef = useRef(false);
+  const directionLockedRef = useRef(false);
 
   const handleTouchStart = useCallback((e: TouchEvent) => {
     const touch = e.touches[0];
-    if (window.scrollY === 0 && !isRefreshing && touch) {
+    if (window.scrollY === 0 && !refreshingRef.current && touch) {
       startYRef.current = touch.clientY;
+      startXRef.current = touch.clientX;
       pullingRef.current = true;
+      directionLockedRef.current = false;
     }
-  }, [isRefreshing]);
+  }, []);
 
   const handleTouchMove = useCallback((e: TouchEvent) => {
-    if (!pullingRef.current || isRefreshing) return;
+    if (!pullingRef.current || refreshingRef.current) return;
     const touch = e.touches[0];
     if (!touch) return;
 
     const deltaY = touch.clientY - startYRef.current;
+    const deltaX = Math.abs(touch.clientX - startXRef.current);
+
+    // First significant movement: lock direction
+    if (!directionLockedRef.current && (deltaX > 5 || Math.abs(deltaY) > 5)) {
+      directionLockedRef.current = true;
+      // Horizontal movement dominates — abort pull gesture
+      if (deltaX > Math.abs(deltaY)) {
+        pullingRef.current = false;
+        return;
+      }
+    }
+
     if (deltaY > 0 && window.scrollY === 0) {
       e.preventDefault();
-      // Apply resistance curve
       const distance = Math.min(deltaY * 0.4, maxPull);
       pullDistanceRef.current = distance;
       setPullDistance(distance);
@@ -50,7 +65,7 @@ export function usePullToRefresh({
       pullDistanceRef.current = 0;
       setPullDistance(0);
     }
-  }, [isRefreshing, maxPull]);
+  }, [maxPull]);
 
   const handleTouchEnd = useCallback(async () => {
     if (!pullingRef.current || refreshingRef.current) return;
@@ -59,7 +74,7 @@ export function usePullToRefresh({
     if (pullDistanceRef.current >= threshold) {
       refreshingRef.current = true;
       setIsRefreshing(true);
-      setPullDistance(threshold * 0.6); // Snap to loading position
+      setPullDistance(threshold * 0.6);
       try {
         await onRefresh();
       } finally {

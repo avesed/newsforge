@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { CategoryNav } from "@/components/category/CategoryNav";
 import { CategorySidebar } from "@/components/category/CategorySidebar";
 import { ArticleList } from "@/components/article/ArticleList";
@@ -9,10 +8,6 @@ import { useIsMobile } from "@/hooks/useIsMobile";
 export default function HomePage() {
   const { activeCategory, setActiveCategory } = useCategoryStore();
   const isMobile = useIsMobile();
-
-  useEffect(() => {
-    setActiveCategory(null);
-  }, [setActiveCategory]);
 
   return (
     <div className="flex gap-6">
