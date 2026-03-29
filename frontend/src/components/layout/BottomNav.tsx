@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Home, BookOpen, Search, Bookmark, Settings } from "lucide-react";
+import { Home, BookOpen, Bookmark } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
+import { cn } from "@/lib/utils";
 
 interface NavItem {
   path: string;
@@ -14,9 +15,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { path: "/", icon: Home, labelKey: "nav.home" },
   { path: "/stories", icon: BookOpen, labelKey: "nav.stories" },
-  { path: "/search", icon: Search, labelKey: "nav.search" },
   { path: "/bookmarks", icon: Bookmark, labelKey: "nav.bookmarks", requireAuth: true },
-  { path: "/settings", icon: Settings, labelKey: "nav.settings", requireAuth: true },
 ];
 
 export function BottomNav() {
@@ -69,11 +68,14 @@ export function BottomNav() {
     return location.pathname.startsWith(path);
   };
 
-  const activeIndex = NAV_ITEMS.findIndex((item) => isActive(item.path));
-
   return (
-    <nav className={`fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur shadow-[0_-1px_3px_rgba(0,0,0,0.05)] safe-area-bottom lg:hidden transition-transform duration-300 ${hidden ? "translate-y-full" : "translate-y-0"}`}>
-      <div className="relative flex h-16 items-center justify-around px-2">
+    <nav
+      className={cn(
+        "fixed z-50 lg:hidden bottom-nav-float",
+        hidden && "bottom-nav-hidden"
+      )}
+    >
+      <div className="flex items-center gap-1 rounded-full bg-white/70 dark:bg-gray-800/60 backdrop-blur-2xl backdrop-saturate-150 shadow-lg shadow-black/5 dark:shadow-black/20 border border-white/20 dark:border-white/10 px-2 py-2">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const active = isActive(item.path);
@@ -82,24 +84,22 @@ export function BottomNav() {
               key={item.path}
               onClick={() => handleNavigate(item)}
               aria-label={t(item.labelKey)}
-              className={`flex flex-1 flex-col items-center gap-1 py-1 ${
-                active ? "text-primary" : "text-muted-foreground"
-              }`}
+              className={cn(
+                "relative flex h-10 w-10 items-center justify-center rounded-full transition-all duration-200",
+                active
+                  ? "bg-primary/15 text-primary dark:bg-primary/20"
+                  : "text-muted-foreground active:scale-95"
+              )}
             >
-              <Icon className="h-5 w-5" />
-              <span className="text-[10px] font-medium">{t(item.labelKey)}</span>
+              <Icon
+                className={cn(
+                  "h-5 w-5 transition-transform duration-200",
+                  active && "scale-110"
+                )}
+              />
             </button>
           );
         })}
-        {activeIndex >= 0 && (
-          <span
-            className="absolute bottom-0 h-1 w-8 rounded-full bg-primary transition-transform duration-200"
-            style={{
-              left: `${(activeIndex + 0.5) * (100 / NAV_ITEMS.length)}%`,
-              transform: "translateX(-50%)",
-            }}
-          />
-        )}
       </div>
     </nav>
   );
