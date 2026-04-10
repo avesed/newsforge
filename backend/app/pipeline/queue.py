@@ -15,8 +15,10 @@ import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
-# Queue key names
-QUEUE_MAIN = "nf:pipeline:queue"
+# Queue key names — priority queues
+QUEUE_HIGH = "nf:pipeline:queue:high"
+QUEUE_LOW = "nf:pipeline:queue:low"
+QUEUE_MAIN = QUEUE_HIGH  # backward compat alias
 QUEUE_RETRY = "nf:pipeline:retry"
 QUEUE_DEAD_LETTER = "nf:pipeline:dead_letter"
 QUEUE_IN_FLIGHT = "nf:pipeline:in_flight"
@@ -32,11 +34,20 @@ QUEUE_PAUSED = "nf:pipeline:paused"
 QUEUE_STREAM = "nf:pipeline:stream"
 
 
-async def enqueue_article(redis: aioredis.Redis, article_data: dict) -> None:
-    """Enqueue an article for pipeline processing."""
+async def enqueue_article(
+    redis: aioredis.Redis, article_data: dict, *, priority: str = "high",
+) -> None:
+    """Enqueue an article for pipeline processing.
+
+    Args:
+        priority: "high" for fresh news from scheduled polling,
+                  "low" for imports, recovered crash articles, etc.
+    """
     article_data["enqueued_at"] = time.time()
+    article_data["priority"] = priority
     raw_json = json.dumps(article_data)
 
+    queue_key = QUEUE_HIGH if priority == "high" else QUEUE_LOW
     article_id = str(article_data.get("article_id") or article_data.get("id") or "")
     title = article_data.get("title", "")
 
@@ -44,19 +55,20 @@ async def enqueue_article(redis: aioredis.Redis, article_data: dict) -> None:
         meta_key = ARTICLE_META.format(article_id)
         try:
             pipe = redis.pipeline(transaction=True)
-            pipe.rpush(QUEUE_MAIN, raw_json)
+            pipe.rpush(queue_key, raw_json)
             pipe.hset(
                 meta_key,
                 mapping={
                     "status": "queued",
                     "title": title,
+                    "priority": priority,
                     "enqueued_at": str(article_data["enqueued_at"]),
                 },
             )
             pipe.expire(meta_key, 86400)  # 24h — must outlive queue wait + processing
             pipe.xadd(
                 QUEUE_STREAM,
-                {"type": "enqueued", "article_id": article_id, "title": title},
+                {"type": "enqueued", "article_id": article_id, "title": title, "priority": priority},
                 maxlen=500,
                 approximate=True,
             )
@@ -66,14 +78,18 @@ async def enqueue_article(redis: aioredis.Redis, article_data: dict) -> None:
                 "Failed to enqueue article %s atomically, falling back to rpush only",
                 article_id, exc_info=True,
             )
-            await redis.rpush(QUEUE_MAIN, raw_json)
+            await redis.rpush(queue_key, raw_json)
     else:
-        await redis.rpush(QUEUE_MAIN, raw_json)
+        await redis.rpush(queue_key, raw_json)
 
 
 async def dequeue_article(redis: aioredis.Redis, timeout: int = 2) -> dict | None:
-    """Dequeue an article (blocking pop)."""
-    result = await redis.blpop(QUEUE_MAIN, timeout=timeout)
+    """Dequeue an article (blocking pop).
+
+    Uses multi-key BLPOP to prefer high-priority articles over low-priority.
+    BLPOP checks keys left-to-right and pops from the first non-empty list.
+    """
+    result = await redis.blpop([QUEUE_HIGH, QUEUE_LOW], timeout=timeout)
     if result is None:
         return None
     _, raw_json = result
@@ -243,20 +259,31 @@ async def update_article_stage(redis: aioredis.Redis, article_id: str, stage: st
 
 async def get_queue_snapshot(redis: aioredis.Redis) -> dict:
     """Get full queue state for admin UI."""
-    # --- Queued: parse directly from QUEUE_MAIN (capped at 200) ---
-    queued_raw = await redis.lrange(QUEUE_MAIN, 0, 199)
-    queued = []
-    for i, raw in enumerate(queued_raw):
-        try:
-            item = json.loads(raw)
-            queued.append({
-                "article_id": str(item.get("article_id") or item.get("id") or ""),
-                "title": item.get("title", ""),
-                "enqueued_at": str(item.get("enqueued_at", "")),
-                "position": i + 1,
-            })
-        except (json.JSONDecodeError, TypeError):
-            continue
+    # --- Queued: parse from both priority queues (capped at 50 each) ---
+    def _parse_queue_items(raw_list: list, priority: str, offset: int = 0) -> list[dict]:
+        items = []
+        for i, raw in enumerate(raw_list):
+            try:
+                item = json.loads(raw)
+                items.append({
+                    "article_id": str(item.get("article_id") or item.get("id") or ""),
+                    "title": item.get("title", ""),
+                    "enqueued_at": str(item.get("enqueued_at", "")),
+                    "priority": priority,
+                    "position": offset + i + 1,
+                })
+            except (json.JSONDecodeError, TypeError):
+                continue
+        return items
+
+    high_raw = await redis.lrange(QUEUE_HIGH, 0, 49)
+    low_raw = await redis.lrange(QUEUE_LOW, 0, 49)
+
+    queued_high = _parse_queue_items(high_raw, "high")
+    queued_low = _parse_queue_items(low_raw, "low")
+
+    # Merged list: high first, then low (capped at 50 total for backward compat)
+    queued = (queued_high + queued_low)[:50]
 
     # --- Processing: fetch IDs then batch HGETALL via pipeline ---
     processing_ids = list(await redis.smembers(QUEUE_PROCESSING))
@@ -307,16 +334,21 @@ async def get_queue_snapshot(redis: aioredis.Redis) -> dict:
         })
 
     # --- Counts (accurate queue length from llen, not capped LRANGE) ---
-    queue_len = await redis.llen(QUEUE_MAIN)
+    queue_high_len = await redis.llen(QUEUE_HIGH)
+    queue_low_len = await redis.llen(QUEUE_LOW)
     retry_len = await redis.zcard(QUEUE_RETRY)
     dead_len = await redis.llen(QUEUE_DEAD_LETTER)
 
     return {
         "queued": queued,
+        "queued_high": queued_high,
+        "queued_low": queued_low,
         "processing": processing,
         "recent": recent,
         "counts": {
-            "queued": queue_len,
+            "queued": queue_high_len + queue_low_len,
+            "queued_high": queue_high_len,
+            "queued_low": queue_low_len,
             "processing": len(processing_ids),
             "completed": len([r for r in recent if r.get("status") == "completed"]),
             "failed": len([r for r in recent if r.get("status") == "failed"]),
@@ -353,7 +385,8 @@ async def recover_in_flight(redis: aioredis.Redis) -> int:
                 article_data = json.loads(data_json)
                 article_data["recovered_from_crash"] = True
                 article_data["enqueued_at"] = time.time()
-                await redis.rpush(QUEUE_MAIN, json.dumps(article_data))
+                article_data["priority"] = "low"
+                await redis.rpush(QUEUE_LOW, json.dumps(article_data))
                 await redis.hdel(QUEUE_IN_FLIGHT, article_id)
                 recovered += 1
                 logger.info(

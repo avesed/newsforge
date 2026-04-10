@@ -75,6 +75,7 @@ async def poll_feeds() -> None:
                         source_id=feed.source_id,
                         feed_id=feed.id,
                         external_id=raw.external_id,
+                        source_name=feed.title or raw.source_name,
                         title=raw.title,
                         url=norm_url,
                         published_at=raw.published_at,
@@ -99,7 +100,7 @@ async def poll_feeds() -> None:
                     "title": raw.title,
                     "summary": raw.summary or "",
                     "language": raw.language,
-                    "source_name": raw.source_name,
+                    "source_name": feed.title or raw.source_name,
                 })
                 new_count += 1
 
@@ -137,6 +138,106 @@ async def poll_feeds() -> None:
 
     if total_new > 0:
         logger.info("Feed poll complete: %d new articles from %d feeds", total_new, len(feeds))
+
+
+async def poll_api_sources() -> None:
+    """Poll all enabled API-type news sources (e.g., Finnhub) and enqueue new articles.
+
+    Unlike poll_feeds() which handles RSS/RSSHub feeds from the database,
+    this function polls sources registered in the source registry with
+    source_type == "api" and configuration in pipeline.yml.
+    """
+    from app.models.article import Article
+    from app.sources.base import FetchParams
+
+    config = load_pipeline_config()
+    sources_config = config.get("sources", {})
+    factory = get_session_factory()
+    redis = await get_redis()
+    dedup = DedupEngine(redis)
+
+    from app.sources.registry import get_source_registry
+    registry = get_source_registry()
+
+    total_new = 0
+    for source in registry.list_sources():
+        if source.source_type != "api":
+            continue
+
+        source_cfg = sources_config.get(source.source_id, {})
+        if not source_cfg.get("enabled", False):
+            logger.debug("API source '%s' is disabled, skipping", source.source_id)
+            continue
+
+        try:
+            # Build FetchParams from config
+            symbols = source_cfg.get("default_symbols")
+            params = FetchParams(symbols=symbols)
+
+            raw_articles = await source.fetch(params)
+            new_count = 0
+
+            for raw in raw_articles:
+                # Dedup check
+                is_dup, norm_url, detected_lang = await dedup.is_duplicate(raw.url, raw.title)
+                if is_dup:
+                    continue
+
+                # Build finance_metadata from source extra data
+                finance_meta = {}
+                if raw.extra:
+                    if raw.extra.get("symbols"):
+                        finance_meta["symbols"] = raw.extra["symbols"]
+                    if raw.extra.get("market"):
+                        finance_meta["market"] = raw.extra["market"]
+                    if raw.extra.get("provider"):
+                        finance_meta["provider"] = raw.extra["provider"]
+
+                article_id = uuid.uuid4()
+                article_lang = raw.language or detected_lang
+
+                async with factory() as session:
+                    article = Article(
+                        id=article_id,
+                        external_id=raw.external_id,
+                        source_name=raw.source_name,
+                        title=raw.title,
+                        url=norm_url,
+                        published_at=raw.published_at,
+                        language=article_lang,
+                        summary=raw.summary,
+                        top_image=raw.top_image,
+                        finance_metadata=finance_meta if finance_meta else None,
+                        content_status="pending",
+                    )
+                    session.add(article)
+                    try:
+                        await session.commit()
+                    except Exception as e:
+                        await session.rollback()
+                        logger.debug("Insert failed for %s: %s", norm_url[:60], e)
+                        continue
+
+                # Enqueue for pipeline processing
+                await q.enqueue_article(redis, {
+                    "article_id": str(article_id),
+                    "url": norm_url,
+                    "title": raw.title,
+                    "summary": raw.summary or "",
+                    "language": raw.language,
+                    "source_name": raw.source_name,
+                })
+                new_count += 1
+
+            total_new += new_count
+            if new_count > 0:
+                logger.info("API source '%s': %d new articles", source.source_id, new_count)
+
+        except Exception:
+            logger.exception("Error polling API source: %s", source.source_id)
+
+    if total_new > 0:
+        logger.info("API source poll complete: %d new articles", total_new)
 
 
 async def cleanup_old_articles() -> None:
@@ -302,11 +403,16 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if not checkpoint or "classification" not in (checkpoint or {}):
         article_data["_checkpoint"]["classification"] = results["classification"]
 
-    # Classification failure → raise so consumer retries
+    # Classification failure → fail-open with partial processing
     if is_default:
-        raise RuntimeError(
-            f"Classification failed (returned defaults) for article: {title[:80]}"
+        logger.warning(
+            "Classification returned defaults for article: %s — continuing with partial processing",
+            title[:80],
         )
+        # Continue with no agents — article will be stored with basic info
+        results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
+        results["partial"] = True
+        return results
 
     # --- Phase 1: Content fetch ---
     await _report_progress("fetch")
@@ -519,6 +625,10 @@ def create_scheduler() -> AsyncIOScheduler:
     poll_interval = scheduler_config.get("feed_poll_interval_seconds", 300)
     cleanup_hours = scheduler_config.get("cleanup_interval_hours", 24)
 
+    # API source poll interval (from sources.finnhub.poll_interval_seconds, default 600s)
+    sources_config = config.get("sources", {})
+    api_poll_interval = sources_config.get("finnhub", {}).get("poll_interval_seconds", 600)
+
     scheduler = AsyncIOScheduler()
 
     # Feed polling (default: every 5 minutes)
@@ -529,6 +639,18 @@ def create_scheduler() -> AsyncIOScheduler:
         id="poll_feeds",
         name="Poll RSS feeds",
         misfire_grace_time=60,
+        coalesce=True,
+        max_instances=1,
+    )
+
+    # API source polling — Finnhub and other API-type sources (default: every 10 minutes)
+    scheduler.add_job(
+        poll_api_sources,
+        "interval",
+        seconds=api_poll_interval,
+        id="poll_api_sources",
+        name="Poll API news sources (Finnhub, etc.)",
+        misfire_grace_time=120,
         coalesce=True,
         max_instances=1,
     )

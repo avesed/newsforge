@@ -52,15 +52,20 @@ async def trigger_webhooks(
     }
 
     # Apply filters and fire in background
-    tasks = []
     for webhook in webhooks:
         if not _matches_filters(webhook, payload):
             continue
-        tasks.append(_deliver_webhook(db, webhook, event_payload))
-
-    if tasks:
-        # Fire-and-forget: don't await completion
-        asyncio.gather(*tasks, return_exceptions=True)
+        asyncio.create_task(
+            _deliver_webhook(
+                webhook_id=webhook.id,
+                webhook_url=webhook.url,
+                webhook_secret=webhook.secret,
+                webhook_consecutive_failures=webhook.consecutive_failures,
+                events=webhook.events,
+                event_type=event_type,
+                event_payload=event_payload,
+            )
+        )
 
 
 def _matches_filters(webhook: Webhook, payload: dict) -> bool:
@@ -86,6 +91,13 @@ def _matches_filters(webhook: Webhook, payload: dict) -> bool:
         if score is None or score < filters["min_value_score"]:
             return False
 
+    # Filter by ingested_by (for WebStock integration)
+    ingested_by = filters.get("ingested_by")
+    if ingested_by:
+        article_meta = payload.get("finance_metadata") or {}
+        if article_meta.get("ingested_by") != ingested_by:
+            return False
+
     return True
 
 
@@ -99,13 +111,22 @@ def _sign_payload(payload_bytes: bytes, secret: str) -> str:
 
 
 async def _deliver_webhook(
-    db: AsyncSession,
-    webhook: Webhook,
+    webhook_id: str,
+    webhook_url: str,
+    webhook_secret: str,
+    webhook_consecutive_failures: int,
+    events: list[str],
+    event_type: str,
     event_payload: dict,
 ) -> None:
-    """Send HTTP POST to webhook URL with HMAC signature."""
+    """Send HTTP POST to webhook URL with HMAC signature.
+
+    Creates its own DB session to avoid sharing a session across concurrent tasks.
+    """
+    from app.db.database import get_session_factory
+
     payload_bytes = json.dumps(event_payload, default=str).encode("utf-8")
-    signature = _sign_payload(payload_bytes, webhook.secret)
+    signature = _sign_payload(payload_bytes, webhook_secret)
 
     headers = {
         "Content-Type": "application/json",
@@ -116,35 +137,45 @@ async def _deliver_webhook(
     try:
         async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT) as client:
             response = await client.post(
-                webhook.url,
+                webhook_url,
                 content=payload_bytes,
                 headers=headers,
             )
 
-        if response.status_code < 400:
-            # Success — reset failure counter
-            await db.execute(
-                update(Webhook)
-                .where(Webhook.id == webhook.id)
-                .values(
-                    consecutive_failures=0,
-                    last_triggered_at=datetime.now(timezone.utc),
+        factory = get_session_factory()
+        async with factory() as session:
+            if response.status_code < 400:
+                # Success — reset failure counter
+                await session.execute(
+                    update(Webhook)
+                    .where(Webhook.id == webhook_id)
+                    .values(
+                        consecutive_failures=0,
+                        last_triggered_at=datetime.now(timezone.utc),
+                    )
                 )
-            )
-            await db.commit()
-            logger.debug("Webhook %s delivered: %s %d", webhook.id, webhook.url, response.status_code)
-        else:
-            await _record_failure(db, webhook, f"HTTP {response.status_code}")
+                await session.commit()
+                logger.debug("Webhook %s delivered: %s %d", webhook_id, webhook_url, response.status_code)
+            else:
+                await _record_failure(session, webhook_id, webhook_consecutive_failures, f"HTTP {response.status_code}")
 
     except httpx.TimeoutException:
-        await _record_failure(db, webhook, "Timeout")
+        await _record_failure_standalone(webhook_id, webhook_consecutive_failures, "Timeout")
     except Exception as exc:
-        await _record_failure(db, webhook, str(exc)[:200])
+        await _record_failure_standalone(webhook_id, webhook_consecutive_failures, str(exc)[:200])
 
 
-async def _record_failure(db: AsyncSession, webhook: Webhook, reason: str) -> None:
-    """Increment failure counter; disable webhook after too many consecutive failures."""
-    new_count = webhook.consecutive_failures + 1
+async def _record_failure(
+    db: AsyncSession,
+    webhook_id: str,
+    consecutive_failures: int,
+    reason: str,
+) -> None:
+    """Increment failure counter; disable webhook after too many consecutive failures.
+
+    Expects a session that the caller manages (commit/close).
+    """
+    new_count = consecutive_failures + 1
     values: dict = {
         "consecutive_failures": new_count,
         "last_triggered_at": datetime.now(timezone.utc),
@@ -154,17 +185,33 @@ async def _record_failure(db: AsyncSession, webhook: Webhook, reason: str) -> No
         values["is_active"] = False
         logger.warning(
             "Webhook %s disabled after %d consecutive failures (last: %s)",
-            webhook.id,
+            webhook_id,
             new_count,
             reason,
         )
     else:
-        logger.info("Webhook %s delivery failed (%d/%d): %s", webhook.id, new_count, _MAX_CONSECUTIVE_FAILURES, reason)
+        logger.info("Webhook %s delivery failed (%d/%d): %s", webhook_id, new_count, _MAX_CONSECUTIVE_FAILURES, reason)
 
     await db.execute(
-        update(Webhook).where(Webhook.id == webhook.id).values(**values)
+        update(Webhook).where(Webhook.id == webhook_id).values(**values)
     )
     await db.commit()
+
+
+async def _record_failure_standalone(
+    webhook_id: str,
+    consecutive_failures: int,
+    reason: str,
+) -> None:
+    """Record failure with its own DB session (for use outside a session context)."""
+    from app.db.database import get_session_factory
+
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await _record_failure(session, webhook_id, consecutive_failures, reason)
+    except Exception:
+        logger.exception("Failed to record webhook failure for %s", webhook_id)
 
 
 async def send_test_event(db: AsyncSession, webhook: Webhook) -> dict:

@@ -56,8 +56,12 @@ def _register_builtin_sources(registry: SourceRegistry) -> None:
     """Register all built-in news source adapters."""
     from app.sources.rss.native import NativeRSSSource
     from app.sources.rss.google_news import GoogleNewsSource, GoogleNewsConfig
+    from app.sources.api.finnhub import FinnhubNewsSource
 
     registry.register(NativeRSSSource())
+
+    # Finnhub — US stock company news + general market news
+    registry.register(FinnhubNewsSource())
 
     # Default Google News instances: EN-US + ZH-CN
     registry.register(GoogleNewsSource(config=GoogleNewsConfig(

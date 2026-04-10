@@ -189,13 +189,14 @@ async def dashboard_stats(
     # --- Queue stats (Redis) ---
     try:
         redis = await get_redis()
-        queue_main = await redis.llen("nf:pipeline:queue")
+        queue_high = await redis.llen("nf:pipeline:queue:high")
+        queue_low = await redis.llen("nf:pipeline:queue:low")
         queue_retry = await redis.zcard("nf:pipeline:retry")
         queue_dead = await redis.llen("nf:pipeline:dead_letter")
     except Exception:
-        queue_main = queue_retry = queue_dead = 0
+        queue_high = queue_low = queue_retry = queue_dead = 0
 
-    queue = {"main": queue_main, "retry": queue_retry, "dead_letter": queue_dead}
+    queue = {"main": queue_high + queue_low, "high": queue_high, "low": queue_low, "retry": queue_retry, "dead_letter": queue_dead}
 
     # --- Assemble response ---
     result = {

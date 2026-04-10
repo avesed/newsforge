@@ -55,8 +55,12 @@ agent_triggers:
 # Routing rules — value-based processing tiers
 routing_rules:
   high_value_threshold: 60       # >= 60: full agent pipeline
-  medium_value_threshold: 30     # 30-59: limited agents
+  medium_value_threshold: 30     # 30-59: limited agents (summarizer + sentiment + translator)
+  lightweight_threshold: 15      # 15-29: lightweight path (entity + tagger only)
   market_impact_upgrades_to_high: true  # has_market_impact forces high-value path
+  lightweight_agents:            # Agents for lightweight articles (score 15-29)
+    - entity
+    - tagger
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
     - sentiment
@@ -152,6 +156,24 @@ categories:
     enable_entity_extraction: false
     enable_sentiment: false
     enable_embedding: false
+
+# News Sources
+sources:
+  finnhub:
+    enabled: true
+    source_type: api
+    poll_interval_seconds: 600      # 10 min — Finnhub free tier: 60 calls/min
+    default_symbols:
+      - AAPL
+      - MSFT
+      - GOOGL
+      - AMZN
+      - NVDA
+      - META
+      - TSLA
+    include_general_news: true
+    company_news_lookback_days: 7
+    request_timeout: 30.0
 
 # Scheduling
 scheduler:

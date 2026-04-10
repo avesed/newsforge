@@ -181,6 +181,18 @@ export async function deleteConsumer(id: string) {
   await apiClient.delete(`/admin/consumers/${id}`);
 }
 
+export async function getConsumerUsage(consumerId: string) {
+  const res = await apiClient.get(`/admin/consumers/${consumerId}/usage`);
+  return res.data as ConsumerUsageRaw;
+}
+
+export async function testConsumerWebhook(consumerId: string, webhookId: string) {
+  const res = await apiClient.post(
+    `/admin/consumers/${consumerId}/webhooks/${webhookId}/test`,
+  );
+  return res.data as { success: boolean; statusCode: number | null; responseBody: string | null; error: string | null };
+}
+
 // --- LLM Providers ---
 
 export async function getLLMProviders() {
@@ -379,13 +391,16 @@ export interface QueueArticle {
   duration_ms?: string;
   error?: string;
   position?: number;
+  priority?: string;
 }
 
 export interface QueueStatus {
   queued: QueueArticle[];
+  queued_high?: QueueArticle[];
+  queued_low?: QueueArticle[];
   processing: QueueArticle[];
   recent: QueueArticle[];
-  counts: { queued: number; processing: number; completed: number; failed: number; dead_letter: number; retry: number };
+  counts: { queued: number; queued_high?: number; queued_low?: number; processing: number; completed: number; failed: number; dead_letter: number; retry: number };
   concurrency: { active: number; target: number };
   paused: boolean;
   circuitBreaker?: { state: string; consecutiveFailures: number };
@@ -393,6 +408,20 @@ export interface QueueStatus {
 
 export async function getQueueStatus(): Promise<QueueStatus> {
   const res = await apiClient.get("/admin/pipeline/queue");
+  return res.data;
+}
+
+export interface QueueItemsResponse {
+  items: QueueArticle[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export async function getQueueItems(page: number, pageSize: number): Promise<QueueItemsResponse> {
+  const res = await apiClient.get("/admin/pipeline/queue/items", {
+    params: { page, page_size: pageSize },
+  });
   return res.data;
 }
 
@@ -424,6 +453,26 @@ export async function getCircuitBreakerStatus() {
 export async function resetCircuitBreaker() {
   const res = await apiClient.post("/admin/pipeline/circuit-breaker/reset");
   return res.data;
+}
+
+// --- Import/Export ---
+
+export interface ImportResult {
+  total: number;
+  imported: number;
+  duplicates: number;
+  errors: number;
+  errorDetails: string[];
+}
+
+export async function importArticles(file: File): Promise<ImportResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await apiClient.post("/admin/articles/import", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 300000, // 5 minutes for large files
+  });
+  return res.data as ImportResult;
 }
 
 // --- LLM Profile & Agent Config types ---
@@ -496,7 +545,7 @@ export interface DashboardStatsRaw {
     neutral: number;
     negative: number;
   };
-  queue: { main: number; retry: number; dead_letter: number };
+  queue: { main: number; high?: number; low?: number; retry: number; dead_letter: number };
 }
 
 export interface PipelineStatsRaw {
@@ -504,7 +553,7 @@ export interface PipelineStatsRaw {
   category_distribution: Record<string, number>;
   market_impact_count: number;
   value_distribution: { high: number; medium: number; low: number };
-  queue: { main: number; retry: number; dead_letter: number };
+  queue: { main: number; high?: number; low?: number; retry: number; dead_letter: number };
 }
 
 export interface PipelineEventRaw {
@@ -563,6 +612,26 @@ export interface ConsumerRaw {
 
 export interface ConsumerCreateRaw extends ConsumerRaw {
   rawApiKey: string;
+}
+
+export interface WebhookSummaryRaw {
+  id: string;
+  url: string;
+  events: string[];
+  isActive: boolean;
+  consecutiveFailures: number;
+  lastTriggeredAt: string | null;
+  createdAt: string | null;
+}
+
+export interface ConsumerUsageRaw {
+  consumerId: string;
+  name: string;
+  isActive: boolean;
+  lastUsedAt: string | null;
+  webhookCount: number;
+  webhooks: WebhookSummaryRaw[];
+  createdAt: string | null;
 }
 
 export interface LLMProviderRaw {

@@ -77,6 +77,17 @@ class PipelineConsumer:
                            len(stale_ids), stale_ids[:5])
             await redis.delete(q.QUEUE_PROCESSING)
 
+        # Migrate legacy queue key to new priority queues (one-time)
+        legacy_len = await redis.llen("nf:pipeline:queue")
+        if legacy_len > 0:
+            logger.info("Migrating %d items from legacy queue to low-priority queue", legacy_len)
+            while True:
+                item = await redis.lpop("nf:pipeline:queue")
+                if item is None:
+                    break
+                await redis.rpush(q.QUEUE_LOW, item)
+            logger.info("Legacy queue migration complete")
+
         # Recover articles that were in-flight when previous consumer crashed
         recovered = await q.recover_in_flight(redis)
         if recovered:
@@ -127,7 +138,7 @@ class PipelineConsumer:
 
                 # Re-check pause after BLPOP (may have changed during the 2s wait)
                 if self._paused:
-                    await q.enqueue_article(redis, article_data)
+                    await q.enqueue_article(redis, article_data, priority=article_data.get("priority", "high"))
                     logger.info("Re-enqueued article dequeued during pause: %s", article_data.get("title", "")[:60])
                     continue
 
@@ -283,8 +294,13 @@ class PipelineConsumer:
             # Extract cleaned text from pipeline
             cleaned_text = pipeline_results.get("cleaned_text")
 
+            # Check for partial processing (fail-open classification)
+            is_partial = pipeline_results.get("partial", False)
+
             # Determine content status
-            if cleaned_text:
+            if is_partial:
+                content_status = "partial"
+            elif cleaned_text:
                 content_status = "processed"
             elif content_info:
                 content_status = "fetched"
@@ -308,8 +324,10 @@ class PipelineConsumer:
                 "content_status": content_status,
                 "word_count": content_info.get("word_count") if content_info else None,
                 "language": content_info.get("language") if content_info else article_data.get("language"),
-                "processing_path": "high_value" if classification.get("value_score", 0) >= 60
-                    or classification.get("has_market_impact") else "medium",
+                "processing_path": "partial" if is_partial else (
+                    "high_value" if classification.get("value_score", 0) >= 60
+                    or classification.get("has_market_impact") else "medium"
+                ),
                 "agents_executed": list(agent_data.keys()) if agent_data else [],
                 "pipeline_metadata": {
                     "duration_ms": pipeline_results.get("pipeline_duration_ms"),
@@ -359,7 +377,9 @@ class PipelineConsumer:
                 update_values["primary_entity_type"] = best.get("type")
 
             # Finance metadata (WebStock compatible ★)
-            finance_meta = {}
+            # Preserve existing finance_metadata (e.g., ingested_by from ingest endpoint)
+            existing_article = await session.get(Article, article_id)
+            finance_meta = dict(existing_article.finance_metadata) if existing_article and existing_article.finance_metadata else {}
             sentiment_result = agent_data.get("sentiment", {})
             if sentiment_result.get("success"):
                 sd = sentiment_result.get("data", {})
@@ -379,7 +399,19 @@ class PipelineConsumer:
             # Extract stock symbols from entity results
             stock_entities = [e for e in all_entities if e.get("type") in ("stock", "index")]
             if stock_entities:
-                finance_meta["symbols"] = [e.get("name") for e in stock_entities]
+                symbols = []
+                for e in stock_entities:
+                    sym = e.get("symbol") or e.get("name", "")
+                    if sym:
+                        symbols.append(sym)
+                finance_meta["symbols"] = symbols
+
+            # Set market from entity agent primary_market
+            entity_result = agent_data.get("entity", {})
+            if entity_result.get("success"):
+                ed = entity_result.get("data", {})
+                if ed.get("primary_market"):
+                    finance_meta["market"] = ed["primary_market"]
 
             if finance_meta:
                 update_values["finance_metadata"] = finance_meta
@@ -397,6 +429,25 @@ class PipelineConsumer:
         await cache.invalidate_pattern("articles:*")
         await cache.invalidate_pattern("homepage:*")
         await cache.invalidate("categories")
+
+        # Trigger webhooks for article.published event
+        try:
+            from app.services.webhook_service import trigger_webhooks
+            webhook_payload = {
+                "article_id": str(article_id) if not isinstance(article_id, str) else article_id,
+                "title": title,
+                "url": article_data.get("url", ""),
+                "primary_category": primary_cat,
+                "categories": cat_slugs,
+                "value_score": classification.get("value_score", 0),
+                "has_market_impact": classification.get("has_market_impact", False),
+                "content_status": content_status,
+                "finance_metadata": update_values.get("finance_metadata"),
+            }
+            async with factory() as webhook_session:
+                await trigger_webhooks(webhook_session, "article.published", webhook_payload)
+        except Exception:
+            logger.warning("Webhook trigger failed for article %s", article_id, exc_info=True)
 
         logger.info(
             "Processed: category=%s value=%d agents=%d url=%s",

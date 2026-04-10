@@ -70,9 +70,16 @@ class AgentRegistry:
         if has_market_impact and market_upgrades:
             effective_score = max(effective_score, high_threshold)
 
-        if effective_score < medium_threshold:
-            # Low value: no agents
+        lightweight_threshold = self._routing_rules.get("lightweight_threshold", 15)
+        lightweight_agent_ids = self._routing_rules.get("lightweight_agents", [])
+
+        if effective_score < lightweight_threshold:
+            # Very low value: no agents
             return {}
+
+        if effective_score < medium_threshold:
+            # Lightweight: basic entity/tag extraction only
+            return self._collect_agents(lightweight_agent_ids)
 
         if effective_score < high_threshold:
             # Medium value: limited agents

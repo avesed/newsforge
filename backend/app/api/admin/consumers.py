@@ -49,12 +49,24 @@ class ConsumerCreateResponse(ConsumerResponse):
     raw_api_key: str
 
 
+class WebhookSummary(CamelModel):
+    id: UUID
+    url: str
+    events: list[str]
+    is_active: bool
+    consecutive_failures: int = 0
+    last_triggered_at: datetime | None = None
+    created_at: datetime | None = None
+
+
 class ConsumerUsageResponse(CamelModel):
     consumer_id: UUID
     name: str
     is_active: bool
     last_used_at: datetime | None = None
     webhook_count: int = 0
+    webhooks: list[WebhookSummary] = []
+    created_at: datetime | None = None
 
 
 # --- Endpoints ---
@@ -153,18 +165,65 @@ async def consumer_usage(
     if consumer is None:
         raise HTTPException(status_code=404, detail="Consumer not found")
 
-    # Count webhooks owned by this consumer
+    # Fetch webhooks owned by this consumer
     from app.models.webhook import Webhook
 
-    webhook_count_result = await db.execute(
-        select(func.count(Webhook.id)).where(Webhook.consumer_id == consumer_id)
+    webhook_result = await db.execute(
+        select(Webhook).where(Webhook.consumer_id == consumer_id).order_by(Webhook.created_at.desc())
     )
-    webhook_count = webhook_count_result.scalar() or 0
+    webhooks = webhook_result.scalars().all()
+
+    webhook_summaries = [
+        WebhookSummary(
+            id=w.id,
+            url=w.url,
+            events=w.events,
+            is_active=w.is_active,
+            consecutive_failures=w.consecutive_failures,
+            last_triggered_at=w.last_triggered_at,
+            created_at=w.created_at,
+        )
+        for w in webhooks
+    ]
 
     return ConsumerUsageResponse(
         consumer_id=consumer.id,
         name=consumer.name,
         is_active=consumer.is_active,
         last_used_at=consumer.last_used_at,
-        webhook_count=webhook_count,
+        webhook_count=len(webhooks),
+        webhooks=webhook_summaries,
+        created_at=consumer.created_at,
     )
+
+
+class WebhookTestResult(CamelModel):
+    success: bool
+    status_code: int | None = None
+    response_body: str | None = None
+    error: str | None = None
+
+
+@router.post("/{consumer_id}/webhooks/{webhook_id}/test", response_model=WebhookTestResult)
+async def test_consumer_webhook(
+    consumer_id: UUID,
+    webhook_id: UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send a test event to a specific consumer webhook."""
+    from app.models.webhook import Webhook
+    from app.services.webhook_service import send_test_event
+
+    result = await db.execute(
+        select(Webhook).where(
+            Webhook.id == webhook_id,
+            Webhook.consumer_id == consumer_id,
+        )
+    )
+    webhook = result.scalar_one_or_none()
+    if webhook is None:
+        raise HTTPException(status_code=404, detail="Webhook not found for this consumer")
+
+    test_result = await send_test_event(db, webhook)
+    return WebhookTestResult(**test_result)

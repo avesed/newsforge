@@ -11,6 +11,8 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import {
   getPipelineEvents,
@@ -19,6 +21,7 @@ import {
   pausePipeline,
   resumePipeline,
   resetCircuitBreaker,
+  getQueueItems,
 } from "@/api/admin";
 import type { PipelineEventRaw, QueueArticle } from "@/api/admin";
 import { useQueueStream } from "@/hooks/useQueueStream";
@@ -45,6 +48,17 @@ function QueueMonitor() {
   const { data: queue, connected, refresh } = useQueueStream();
   const [concurrencyInput, setConcurrencyInput] = useState<string>("");
   const [activeTab, setActiveTab] = useState("queued");
+
+  // Pagination state for queued tab
+  const [queuePage, setQueuePage] = useState(1);
+  const [queuePageSize, setQueuePageSize] = useState(50);
+
+  const { data: paginatedQueue } = useQuery({
+    queryKey: ["admin", "queue-items", queuePage, queuePageSize],
+    queryFn: () => getQueueItems(queuePage, queuePageSize),
+    refetchInterval: 10_000,
+    enabled: activeTab === "queued",
+  });
 
   const concurrencyMutation = useMutation({
     mutationFn: (value: number) => setConcurrency(value),
@@ -98,6 +112,21 @@ function QueueMonitor() {
       header: t("admin.queue.position"),
       accessor: (r) => r.position ?? "-",
       className: "w-16 text-center",
+    },
+    {
+      header: t("admin.queue.priority", "Priority"),
+      accessor: (r) => (
+        <span
+          className={`inline-block rounded px-1.5 py-0.5 text-xs font-medium ${
+            r.priority === "high"
+              ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+              : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400"
+          }`}
+        >
+          {r.priority === "high" ? "HIGH" : "LOW"}
+        </span>
+      ),
+      className: "w-20",
     },
     {
       header: t("admin.articleId"),
@@ -233,6 +262,9 @@ function QueueMonitor() {
         <StatsCard
           label={t("admin.queue.queued")}
           value={queue.counts.queued}
+          {...((queue.counts.queued_high != null || queue.counts.queued_low != null)
+            ? { subtitle: `H: ${queue.counts.queued_high ?? 0} / L: ${queue.counts.queued_low ?? 0}` }
+            : {})}
           icon={ListOrdered}
         />
         <StatsCard
@@ -335,13 +367,68 @@ function QueueMonitor() {
         </Tabs.List>
 
         <Tabs.Content value="queued">
-          <div className="mt-3 rounded-lg border border-border bg-card">
-            <DataTable
-              columns={queuedColumns}
-              data={queue.queued}
-              keyExtractor={(r) => r.article_id}
-              emptyMessage={t("admin.queue.noItems")}
-            />
+          <div className="mt-3 flex flex-col gap-3">
+            {/* Page size selector + pagination info */}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">
+                  {t("admin.queue.pageSize", "Page size")}:
+                </span>
+                <select
+                  value={queuePageSize}
+                  onChange={(e) => {
+                    setQueuePageSize(Number(e.target.value));
+                    setQueuePage(1);
+                  }}
+                  className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground outline-none focus:border-primary"
+                >
+                  {[25, 50, 100].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              {paginatedQueue && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">
+                    {t("admin.queue.pageInfo", "Page {{page}} of {{total}}", {
+                      page: paginatedQueue.page,
+                      total: Math.max(1, Math.ceil(paginatedQueue.total / paginatedQueue.page_size)),
+                    })}
+                  </span>
+                  <button
+                    onClick={() => setQueuePage((p) => Math.max(1, p - 1))}
+                    disabled={queuePage <= 1}
+                    className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() =>
+                      setQueuePage((p) =>
+                        p < Math.ceil(paginatedQueue.total / paginatedQueue.page_size)
+                          ? p + 1
+                          : p,
+                      )
+                    }
+                    disabled={
+                      !paginatedQueue ||
+                      queuePage >= Math.ceil(paginatedQueue.total / paginatedQueue.page_size)
+                    }
+                    className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="rounded-lg border border-border bg-card">
+              <DataTable
+                columns={queuedColumns}
+                data={paginatedQueue?.items ?? queue.queued}
+                keyExtractor={(r) => r.article_id}
+                emptyMessage={t("admin.queue.noItems")}
+              />
+            </div>
           </div>
         </Tabs.Content>
 

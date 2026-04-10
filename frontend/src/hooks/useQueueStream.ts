@@ -10,6 +10,7 @@ interface QueueEvent {
   error?: string;
   value?: string;
   paused?: string;
+  priority?: string;
   state?: string;                    // circuit breaker state
   consecutive_failures?: string;     // circuit breaker failure count
 }
@@ -124,28 +125,43 @@ function applyEvent(
   }
 
   switch (event.type) {
-    case "enqueued":
-      next.queued = [
-        ...state.queued,
-        {
-          article_id: id,
-          title: event.title ?? "",
-          enqueued_at: String(Date.now() / 1000),
-          position: state.queued.length + 1,
-        },
-      ];
-      next.counts = { ...state.counts, queued: state.counts.queued + 1 };
+    case "enqueued": {
+      const priority = event.priority ?? "high";
+      const newItem = {
+        article_id: id,
+        title: event.title ?? "",
+        enqueued_at: String(Date.now() / 1000),
+        position: state.queued.length + 1,
+        priority,
+      };
+      next.queued = [...state.queued, newItem];
+      if (priority === "high") {
+        next.queued_high = [...(state.queued_high ?? []), newItem];
+      } else {
+        next.queued_low = [...(state.queued_low ?? []), newItem];
+      }
+      next.counts = {
+        ...state.counts,
+        queued: state.counts.queued + 1,
+        queued_high: (state.counts.queued_high ?? 0) + (priority === "high" ? 1 : 0),
+        queued_low: (state.counts.queued_low ?? 0) + (priority === "low" ? 1 : 0),
+      };
       break;
+    }
 
-    case "processing":
+    case "processing": {
+      const dequeuedItem = state.queued.find((a) => a.article_id === id);
+      const dequeuedPriority = dequeuedItem?.priority;
       next.queued = state.queued.filter((a) => a.article_id !== id);
+      if (state.queued_high) next.queued_high = state.queued_high.filter((a) => a.article_id !== id);
+      if (state.queued_low) next.queued_low = state.queued_low.filter((a) => a.article_id !== id);
       next.processing = [
         ...state.processing,
         {
           article_id: id,
           title:
             event.title ??
-            state.queued.find((a) => a.article_id === id)?.title ??
+            dequeuedItem?.title ??
             "",
           current_stage: "",
           started_at: String(Date.now() / 1000),
@@ -154,9 +170,12 @@ function applyEvent(
       next.counts = {
         ...state.counts,
         queued: Math.max(0, state.counts.queued - 1),
+        queued_high: dequeuedPriority === "high" ? Math.max(0, (state.counts.queued_high ?? 0) - 1) : (state.counts.queued_high ?? 0),
+        queued_low: dequeuedPriority === "low" ? Math.max(0, (state.counts.queued_low ?? 0) - 1) : (state.counts.queued_low ?? 0),
         processing: state.counts.processing + 1,
       };
       break;
+    }
 
     case "stage":
       next.processing = state.processing.map((a) =>

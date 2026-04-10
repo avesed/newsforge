@@ -278,10 +278,11 @@ async def get_related_articles(
 
 def _to_response(article: Article, feed_title: str | None = None) -> ArticleResponse:
     """Convert ORM Article to response schema."""
-    # Derive source_name: extract from "Title - Source" pattern, fallback to feed title
-    source_name = None
-    if article.title and " - " in article.title:
-        source_name = article.title.rsplit(" - ", 1)[-1].strip()
+    # Use persisted source_name first, then fallback to title extraction
+    source_name = article.source_name
+    if not source_name:
+        if article.title and " - " in article.title:
+            source_name = article.title.rsplit(" - ", 1)[-1].strip()
     if not source_name:
         source_name = feed_title
 

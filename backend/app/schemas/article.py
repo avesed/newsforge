@@ -81,3 +81,83 @@ class CategoryResponse(CamelModel):
     description: str | None = None
     article_count: int = 0
     is_active: bool = True
+
+
+# --- Internal API: Ingest / Status / Results (WebStock integration) ---
+
+class IngestArticle(CamelModel):
+    """Single article from an external consumer like WebStock."""
+    url: str
+    title: str
+    published_at: datetime | None = None
+    summary: str | None = None
+    source_name: str | None = None
+    language: str | None = None
+    symbol: str | None = None
+    market: str | None = None
+    external_id: str | None = None
+    image_url: str | None = None
+    provider: str | None = None
+
+
+class IngestRequest(CamelModel):
+    articles: list[IngestArticle]
+
+
+class IngestArticleResult(CamelModel):
+    url: str
+    article_id: str | None = None
+    external_id: str | None = None
+    status: str  # "new" | "duplicate" | "error"
+    error: str | None = None
+
+
+class IngestResponse(CamelModel):
+    total: int
+    new_count: int
+    duplicate_count: int
+    error_count: int
+    results: list[IngestArticleResult]
+
+
+class ArticleStatusItem(CamelModel):
+    article_id: str
+    status: str  # "queued" | "processing" | "completed" | "failed" | "not_found"
+    current_stage: str | None = None
+    enqueued_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+
+
+class StatusResponse(CamelModel):
+    results: list[ArticleStatusItem]
+
+
+class EnrichedArticleResponse(CamelModel):
+    """Full enriched article response for external consumers."""
+    id: str
+    external_id: str | None = None
+    title: str
+    url: str
+    published_at: datetime | None = None
+    primary_category: str | None = None
+    categories: list[str] | None = None
+    tags: list[str] | None = None
+    value_score: int | None = None
+    has_market_impact: bool = False
+    market_impact_hint: str | None = None
+    ai_summary: str | None = None
+    detailed_summary: str | None = None
+    ai_analysis: str | None = None
+    full_text: str | None = None
+    title_zh: str | None = None
+    full_text_zh: str | None = None
+    entities: list[dict] | None = None
+    primary_entity: str | None = None
+    primary_entity_type: str | None = None
+    sentiment_score: float | None = None
+    sentiment_label: str | None = None
+    finance_metadata: dict | None = None
+    content_status: str = "pending"
+    agents_executed: list[str] | None = None
+    processing_path: str | None = None

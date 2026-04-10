@@ -3,12 +3,13 @@ import { type LucideIcon } from "lucide-react";
 interface StatsCardProps {
   label: string;
   value: string | number;
+  subtitle?: string;
   icon?: LucideIcon;
   trend?: { value: number; label: string };
   className?: string;
 }
 
-export function StatsCard({ label, value, icon: Icon, trend, className }: StatsCardProps) {
+export function StatsCard({ label, value, subtitle, icon: Icon, trend, className }: StatsCardProps) {
   return (
     <div
       className={`rounded-lg border border-border bg-card p-5 ${className ?? ""}`}
@@ -18,6 +19,9 @@ export function StatsCard({ label, value, icon: Icon, trend, className }: StatsC
         {Icon && <Icon className="h-4 w-4 text-muted-foreground" />}
       </div>
       <p className="mt-2 text-3xl font-bold text-foreground">{value}</p>
+      {subtitle && (
+        <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+      )}
       {trend && (
         <p
           className={`mt-1 text-xs font-medium ${

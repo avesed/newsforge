@@ -60,7 +60,8 @@ async def pipeline_stats(
 
     # Redis queue stats
     redis = await get_redis()
-    queue_len = await redis.llen("nf:pipeline:queue")
+    queue_high = await redis.llen("nf:pipeline:queue:high")
+    queue_low = await redis.llen("nf:pipeline:queue:low")
     retry_len = await redis.zcard("nf:pipeline:retry")
     dead_len = await redis.llen("nf:pipeline:dead_letter")
 
@@ -69,7 +70,7 @@ async def pipeline_stats(
         "category_distribution": category_counts,
         "market_impact_count": market_impact_count,
         "value_distribution": {"high": value_dist[0], "medium": value_dist[1], "low": value_dist[2]},
-        "queue": {"main": queue_len, "retry": retry_len, "dead_letter": dead_len},
+        "queue": {"main": queue_high + queue_low, "high": queue_high, "low": queue_low, "retry": retry_len, "dead_letter": dead_len},
     }
 
 
@@ -114,6 +115,81 @@ async def trigger_poll(admin: User = Depends(require_admin)):
     import asyncio
     asyncio.create_task(poll_feeds())
     return {"status": "triggered"}
+
+
+@router.get("/queue/items")
+async def queue_items(
+    page: int = 1,
+    page_size: int = 50,
+    priority: str | None = None,
+    admin: User = Depends(require_admin),
+):
+    """Paginated queue listing across both priority queues.
+
+    Items are returned high-first, then low.  An optional ``priority``
+    filter (``high`` / ``low``) restricts to a single queue.
+    """
+    import json as json_mod
+
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 200:
+        page_size = 50
+
+    redis = await get_redis()
+
+    # Determine which queues to read
+    if priority == "high":
+        queues = [(q.QUEUE_HIGH, "high")]
+    elif priority == "low":
+        queues = [(q.QUEUE_LOW, "low")]
+    else:
+        queues = [(q.QUEUE_HIGH, "high"), (q.QUEUE_LOW, "low")]
+
+    # Get lengths
+    lengths: dict[str, int] = {}
+    for key, label in queues:
+        lengths[label] = await redis.llen(key)
+    total = sum(lengths.values())
+
+    # Virtual offset across concatenated high+low
+    start = (page - 1) * page_size
+    remaining = page_size
+    items: list[dict] = []
+    global_offset = 0
+
+    for key, label in queues:
+        q_len = lengths[label]
+        if start >= global_offset + q_len:
+            global_offset += q_len
+            continue
+        local_start = max(0, start - global_offset)
+        local_end = local_start + remaining - 1
+        raw_items = await redis.lrange(key, local_start, local_end)
+        for i, raw in enumerate(raw_items):
+            try:
+                item = json_mod.loads(raw)
+                items.append({
+                    "article_id": str(item.get("article_id") or item.get("id") or ""),
+                    "title": item.get("title", ""),
+                    "enqueued_at": str(item.get("enqueued_at", "")),
+                    "priority": item.get("priority", label),
+                    "position": global_offset + local_start + i + 1,
+                })
+            except (ValueError, TypeError):
+                continue
+        remaining -= len(raw_items)
+        global_offset += q_len
+        if remaining <= 0:
+            break
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "counts": lengths,
+    }
 
 
 @router.get("/queue")

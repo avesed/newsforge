@@ -33,6 +33,7 @@ class Article(Base):
         UUID(as_uuid=True), ForeignKey("feeds.id", ondelete="SET NULL"), index=True
     )
     external_id: Mapped[str | None] = mapped_column(String(255))
+    source_name: Mapped[str | None] = mapped_column(String(200))
 
     # Core fields
     title: Mapped[str] = mapped_column(String(500), nullable=False)
