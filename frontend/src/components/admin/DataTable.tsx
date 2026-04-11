@@ -30,8 +30,8 @@ export function DataTable<T>({
   }
 
   return (
-    <div className={`overflow-x-auto ${className ?? ""}`}>
-      <table className="w-full text-sm">
+    <div className="overflow-x-auto">
+      <table className={`w-full text-sm ${className ?? ""}`}>
         <thead>
           <tr className="border-b border-border">
             {columns.map((col) => (

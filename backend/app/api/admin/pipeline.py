@@ -192,6 +192,53 @@ async def queue_items(
     }
 
 
+@router.get("/queue/recent")
+async def recent_items(
+    page: int = 1,
+    page_size: int = 50,
+    admin: User = Depends(require_admin),
+):
+    """Paginated recent (completed/failed) articles."""
+    import json as json_mod
+
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 200:
+        page_size = 50
+
+    redis = await get_redis()
+    total = await redis.llen(q.QUEUE_RECENT)
+
+    start = (page - 1) * page_size
+    end = start + page_size - 1
+    recent_ids = await redis.lrange(q.QUEUE_RECENT, start, end)
+
+    items: list[dict] = []
+    if recent_ids:
+        pipe = redis.pipeline(transaction=False)
+        for aid in recent_ids:
+            pipe.hgetall(q.ARTICLE_META.format(aid))
+        results = await pipe.execute()
+
+        for aid, meta in zip(recent_ids, results):
+            m = meta or {}
+            items.append({
+                "article_id": aid,
+                "title": m.get("title", ""),
+                "status": m.get("status", ""),
+                "completed_at": m.get("completed_at"),
+                "duration_ms": m.get("duration_ms"),
+                "error": m.get("error"),
+            })
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
 @router.get("/queue")
 async def queue_status(admin: User = Depends(require_admin)):
     """Current queue state with per-article details."""

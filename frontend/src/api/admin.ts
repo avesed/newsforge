@@ -425,6 +425,13 @@ export async function getQueueItems(page: number, pageSize: number): Promise<Que
   return res.data;
 }
 
+export async function getRecentItems(page: number, pageSize: number): Promise<QueueItemsResponse> {
+  const res = await apiClient.get("/admin/pipeline/queue/recent", {
+    params: { page, page_size: pageSize },
+  });
+  return res.data;
+}
+
 export async function getConcurrency() {
   const res = await apiClient.get("/admin/pipeline/concurrency");
   return res.data as { active: number; target: number; default: number };

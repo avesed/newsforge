@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import * as Tabs from "@radix-ui/react-tabs";
@@ -22,6 +22,7 @@ import {
   resumePipeline,
   resetCircuitBreaker,
   getQueueItems,
+  getRecentItems,
 } from "@/api/admin";
 import type { PipelineEventRaw, QueueArticle } from "@/api/admin";
 import { useQueueStream } from "@/hooks/useQueueStream";
@@ -41,6 +42,98 @@ function formatElapsed(startTimestamp?: string): string {
   return `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`;
 }
 
+function formatDuration(ms?: string | number | null): string {
+  if (ms == null) return "-";
+  const val = typeof ms === "string" ? parseFloat(ms) : ms;
+  if (Number.isNaN(val)) return "-";
+  if (val < 1000) return `${Math.round(val)}ms`;
+  if (val < 60_000) return `${(val / 1000).toFixed(1)}s`;
+  const mins = Math.floor(val / 60_000);
+  const secs = Math.round((val % 60_000) / 1000);
+  return `${mins}m ${secs}s`;
+}
+
+/* ---------- Shared pagination component ---------- */
+
+function Pagination({
+  page,
+  totalPages,
+  pageSize,
+  pageSizeOptions = [25, 50, 100],
+  onPageChange,
+  onPageSizeChange,
+  t,
+}: {
+  page: number;
+  totalPages: number;
+  pageSize: number;
+  pageSizeOptions?: number[];
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
+  t: (key: string, opts?: any) => string;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">
+          {t("admin.queue.pageSize")}:
+        </span>
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground outline-none focus:border-primary"
+        >
+          {pageSizeOptions.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">
+          {t("admin.queue.pageInfo", {
+            page,
+            total: totalPages,
+            defaultValue: "Page {{page}} of {{total}}",
+          })}
+        </span>
+        <button
+          onClick={() => onPageChange(Math.max(1, page - 1))}
+          disabled={page <= 1}
+          className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <button
+          onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+          className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Clickable title cell ---------- */
+
+function TitleCell({ title }: { title?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!title) return <span>-</span>;
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      className={`text-left ${expanded ? "whitespace-normal break-all" : "block w-full truncate"}`}
+      title={expanded ? undefined : title}
+    >
+      {title}
+    </button>
+  );
+}
+
 /* ---------- Queue Monitor ---------- */
 
 function QueueMonitor() {
@@ -49,15 +142,26 @@ function QueueMonitor() {
   const [concurrencyInput, setConcurrencyInput] = useState<string>("");
   const [activeTab, setActiveTab] = useState("queued");
 
-  // Pagination state for queued tab
+  // Pagination state — queued tab
   const [queuePage, setQueuePage] = useState(1);
   const [queuePageSize, setQueuePageSize] = useState(50);
+
+  // Pagination state — recent tab
+  const [recentPage, setRecentPage] = useState(1);
+  const [recentPageSize, setRecentPageSize] = useState(50);
 
   const { data: paginatedQueue } = useQuery({
     queryKey: ["admin", "queue-items", queuePage, queuePageSize],
     queryFn: () => getQueueItems(queuePage, queuePageSize),
     refetchInterval: 10_000,
     enabled: activeTab === "queued",
+  });
+
+  const { data: paginatedRecent } = useQuery({
+    queryKey: ["admin", "recent-items", recentPage, recentPageSize],
+    queryFn: () => getRecentItems(recentPage, recentPageSize),
+    refetchInterval: 10_000,
+    enabled: activeTab === "recent",
   });
 
   const concurrencyMutation = useMutation({
@@ -74,11 +178,18 @@ function QueueMonitor() {
 
   const resetCBMutation = useMutation({
     mutationFn: () => resetCircuitBreaker(),
-    onSuccess: () => {
-      // Force refresh to get latest state
-      refresh();
-    },
+    onSuccess: () => refresh(),
   });
+
+  const handleQueuePageSizeChange = useCallback((size: number) => {
+    setQueuePageSize(size);
+    setQueuePage(1);
+  }, []);
+
+  const handleRecentPageSizeChange = useCallback((size: number) => {
+    setRecentPageSize(size);
+    setRecentPage(1);
+  }, []);
 
   if (!queue) {
     return (
@@ -106,12 +217,12 @@ function QueueMonitor() {
   const tabTriggerClass =
     "px-3 py-2 text-sm font-medium text-muted-foreground data-[state=active]:text-foreground data-[state=active]:border-b-2 data-[state=active]:border-primary outline-none";
 
-  /* Column defs */
+  /* Column defs — title column uses flex-1 to fill remaining space */
   const queuedColumns: Column<QueueArticle>[] = [
     {
       header: t("admin.queue.position"),
       accessor: (r) => r.position ?? "-",
-      className: "w-16 text-center",
+      className: "w-12 shrink-0 text-center",
     },
     {
       header: t("admin.queue.priority", "Priority"),
@@ -126,7 +237,7 @@ function QueueMonitor() {
           {r.priority === "high" ? "HIGH" : "LOW"}
         </span>
       ),
-      className: "w-20",
+      className: "w-16 shrink-0",
     },
     {
       header: t("admin.articleId"),
@@ -135,18 +246,17 @@ function QueueMonitor() {
           {r.article_id?.slice(0, 8) ?? "-"}
         </span>
       ),
+      className: "w-20 shrink-0",
     },
     {
       header: t("admin.articleTitle", "Title"),
-      accessor: (r) => (
-        <span className="max-w-[300px] truncate" title={r.title}>
-          {r.title || "-"}
-        </span>
-      ),
+      accessor: (r) => <TitleCell title={r.title} />,
+      className: "min-w-0",
     },
     {
       header: t("admin.queue.waitTime"),
       accessor: (r) => formatElapsed(r.enqueued_at),
+      className: "w-20 shrink-0 text-right",
     },
   ];
 
@@ -158,23 +268,23 @@ function QueueMonitor() {
           {r.article_id?.slice(0, 8) ?? "-"}
         </span>
       ),
+      className: "w-20 shrink-0",
     },
     {
       header: t("admin.articleTitle", "Title"),
-      accessor: (r) => (
-        <span className="max-w-[300px] truncate" title={r.title}>
-          {r.title || "-"}
-        </span>
-      ),
+      accessor: (r) => <TitleCell title={r.title} />,
+      className: "min-w-0",
     },
     {
       header: t("admin.queue.currentStage"),
       accessor: (r) =>
         r.current_stage ? <StatusBadge status={r.current_stage} /> : "-",
+      className: "w-24 shrink-0",
     },
     {
       header: t("admin.queue.elapsed"),
       accessor: (r) => formatElapsed(r.started_at),
+      className: "w-20 shrink-0 text-right",
     },
   ];
 
@@ -186,40 +296,45 @@ function QueueMonitor() {
           {r.article_id?.slice(0, 8) ?? "-"}
         </span>
       ),
+      className: "w-20 shrink-0",
     },
     {
       header: t("admin.articleTitle", "Title"),
-      accessor: (r) => (
-        <span className="max-w-[300px] truncate" title={r.title}>
-          {r.title || "-"}
-        </span>
-      ),
+      accessor: (r) => <TitleCell title={r.title} />,
+      className: "min-w-0",
     },
     {
       header: t("admin.status"),
-      accessor: (r) => (
-        <StatusBadge status={r.status ?? "unknown"} />
-      ),
+      accessor: (r) => <StatusBadge status={r.status ?? "unknown"} />,
+      className: "w-24 shrink-0",
     },
     {
       header: t("admin.duration"),
-      accessor: (r) =>
-        r.duration_ms != null ? `${r.duration_ms}ms` : "-",
-      className: "text-right",
+      accessor: (r) => formatDuration(r.duration_ms),
+      className: "w-20 shrink-0 text-right",
     },
     {
       header: t("admin.errorDetail"),
       accessor: (r) =>
         r.error ? (
           <span
-            className="max-w-[200px] truncate text-xs text-red-600 dark:text-red-400"
+            className="block truncate text-xs text-red-600 dark:text-red-400"
             title={r.error}
           >
             {r.error}
           </span>
         ) : null,
+      className: "w-40 shrink-0",
     },
   ];
+
+  const queueTotalPages = paginatedQueue
+    ? Math.max(1, Math.ceil(paginatedQueue.total / paginatedQueue.page_size))
+    : 1;
+
+  const recentTotalPages = paginatedRecent
+    ? Math.max(1, Math.ceil(paginatedRecent.total / paginatedRecent.page_size))
+    : 1;
 
   return (
     <div className="flex flex-col gap-4">
@@ -237,7 +352,8 @@ function QueueMonitor() {
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span className="flex-1">
             {t("admin.queue.circuitBreakerOpen", {
-              defaultValue: "Circuit breaker OPEN — pipeline paused due to {{count}} consecutive failures. LLM provider may be down.",
+              defaultValue:
+                "Circuit breaker OPEN — pipeline paused due to {{count}} consecutive failures. LLM provider may be down.",
               count: queue.circuitBreaker.consecutiveFailures,
             })}
           </span>
@@ -246,14 +362,19 @@ function QueueMonitor() {
             disabled={resetCBMutation.isPending}
             className="shrink-0 rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
           >
-            {resetCBMutation.isPending ? t("common.resetting", "Resetting...") : t("common.reset", "Reset")}
+            {resetCBMutation.isPending
+              ? t("common.resetting", "Resetting...")
+              : t("common.reset", "Reset")}
           </button>
         </div>
       )}
       {queue.circuitBreaker?.state === "half_open" && (
         <div className="flex items-center gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          {t("admin.queue.circuitBreakerHalfOpen", "Circuit breaker probing — testing if LLM provider has recovered...")}
+          {t(
+            "admin.queue.circuitBreakerHalfOpen",
+            "Circuit breaker probing — testing if LLM provider has recovered...",
+          )}
         </div>
       )}
 
@@ -262,8 +383,11 @@ function QueueMonitor() {
         <StatsCard
           label={t("admin.queue.queued")}
           value={queue.counts.queued}
-          {...((queue.counts.queued_high != null || queue.counts.queued_low != null)
-            ? { subtitle: `H: ${queue.counts.queued_high ?? 0} / L: ${queue.counts.queued_low ?? 0}` }
+          {...(queue.counts.queued_high != null ||
+          queue.counts.queued_low != null
+            ? {
+                subtitle: `H: ${queue.counts.queued_high ?? 0} / L: ${queue.counts.queued_low ?? 0}`,
+              }
             : {})}
           icon={ListOrdered}
         />
@@ -310,7 +434,8 @@ function QueueMonitor() {
             {t("admin.queue.concurrency")}:
           </span>
           <span className="text-sm text-foreground">
-            {t("admin.queue.active")} {queue.concurrency.active} / {t("admin.queue.target")} {queue.concurrency.target}
+            {t("admin.queue.active")} {queue.concurrency.active} /{" "}
+            {t("admin.queue.target")} {queue.concurrency.target}
           </span>
           <input
             type="number"
@@ -356,82 +481,42 @@ function QueueMonitor() {
       <Tabs.Root value={activeTab} onValueChange={setActiveTab}>
         <Tabs.List className="flex gap-1 border-b border-border">
           <Tabs.Trigger value="queued" className={tabTriggerClass}>
-            {t("admin.queue.queued")} ({queue.queued.length})
+            {t("admin.queue.queued")} ({queue.counts.queued.toLocaleString()})
           </Tabs.Trigger>
           <Tabs.Trigger value="processing" className={tabTriggerClass}>
-            {t("admin.queue.processing")} ({queue.processing.length})
+            {t("admin.queue.processing")} ({queue.counts.processing})
           </Tabs.Trigger>
           <Tabs.Trigger value="recent" className={tabTriggerClass}>
-            {t("admin.queue.recent")} ({queue.recent.length})
+            {t("admin.queue.recent")} ({paginatedRecent?.total ?? queue.recent.length})
           </Tabs.Trigger>
         </Tabs.List>
 
+        {/* Queued tab */}
         <Tabs.Content value="queued">
           <div className="mt-3 flex flex-col gap-3">
-            {/* Page size selector + pagination info */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  {t("admin.queue.pageSize", "Page size")}:
-                </span>
-                <select
-                  value={queuePageSize}
-                  onChange={(e) => {
-                    setQueuePageSize(Number(e.target.value));
-                    setQueuePage(1);
-                  }}
-                  className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground outline-none focus:border-primary"
-                >
-                  {[25, 50, 100].map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </div>
-              {paginatedQueue && (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-muted-foreground">
-                    {t("admin.queue.pageInfo", "Page {{page}} of {{total}}", {
-                      page: paginatedQueue.page,
-                      total: Math.max(1, Math.ceil(paginatedQueue.total / paginatedQueue.page_size)),
-                    })}
-                  </span>
-                  <button
-                    onClick={() => setQueuePage((p) => Math.max(1, p - 1))}
-                    disabled={queuePage <= 1}
-                    className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() =>
-                      setQueuePage((p) =>
-                        p < Math.ceil(paginatedQueue.total / paginatedQueue.page_size)
-                          ? p + 1
-                          : p,
-                      )
-                    }
-                    disabled={
-                      !paginatedQueue ||
-                      queuePage >= Math.ceil(paginatedQueue.total / paginatedQueue.page_size)
-                    }
-                    className="rounded-md border border-border p-1 text-muted-foreground hover:bg-accent disabled:opacity-30"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                </div>
-              )}
-            </div>
+            {paginatedQueue && (
+              <Pagination
+                page={queuePage}
+                totalPages={queueTotalPages}
+                pageSize={queuePageSize}
+                onPageChange={setQueuePage}
+                onPageSizeChange={handleQueuePageSizeChange}
+                t={t}
+              />
+            )}
             <div className="rounded-lg border border-border bg-card">
               <DataTable
                 columns={queuedColumns}
                 data={paginatedQueue?.items ?? queue.queued}
                 keyExtractor={(r) => r.article_id}
                 emptyMessage={t("admin.queue.noItems")}
+                className="table-fixed"
               />
             </div>
           </div>
         </Tabs.Content>
 
+        {/* Processing tab */}
         <Tabs.Content value="processing">
           <div className="mt-3 rounded-lg border border-border bg-card">
             <DataTable
@@ -439,18 +524,33 @@ function QueueMonitor() {
               data={queue.processing}
               keyExtractor={(r) => r.article_id}
               emptyMessage={t("admin.queue.noItems")}
+              className="table-fixed"
             />
           </div>
         </Tabs.Content>
 
+        {/* Recent tab */}
         <Tabs.Content value="recent">
-          <div className="mt-3 rounded-lg border border-border bg-card">
-            <DataTable
-              columns={recentColumns}
-              data={queue.recent}
-              keyExtractor={(r) => r.article_id + (r.completed_at ?? "")}
-              emptyMessage={t("admin.queue.noItems")}
-            />
+          <div className="mt-3 flex flex-col gap-3">
+            {paginatedRecent && (
+              <Pagination
+                page={recentPage}
+                totalPages={recentTotalPages}
+                pageSize={recentPageSize}
+                onPageChange={setRecentPage}
+                onPageSizeChange={handleRecentPageSizeChange}
+                t={t}
+              />
+            )}
+            <div className="rounded-lg border border-border bg-card">
+              <DataTable
+                columns={recentColumns}
+                data={paginatedRecent?.items ?? queue.recent}
+                keyExtractor={(r) => r.article_id + (r.completed_at ?? "")}
+                emptyMessage={t("admin.queue.noItems")}
+                className="table-fixed"
+              />
+            </div>
           </div>
         </Tabs.Content>
       </Tabs.Root>
@@ -487,8 +587,7 @@ function PipelineEvents() {
     },
     {
       header: t("admin.duration"),
-      accessor: (r) =>
-        r.duration_ms != null ? `${r.duration_ms}ms` : "-",
+      accessor: (r) => formatDuration(r.duration_ms),
       className: "text-right",
     },
     {
@@ -514,7 +613,7 @@ function PipelineEvents() {
       accessor: (r) =>
         r.error ? (
           <span
-            className="max-w-[200px] truncate text-xs text-red-600 dark:text-red-400"
+            className="block truncate text-xs text-red-600 dark:text-red-400"
             title={r.error}
           >
             {r.error}
