@@ -335,86 +335,19 @@ class PipelineConsumer:
                 },
             }
 
-            # Extract specific agent outputs for dedicated columns
-            summarizer = agent_data.get("summarizer", {})
-            if summarizer.get("success"):
-                summary_data = summarizer.get("data", {})
-                if summary_data.get("ai_summary"):
-                    update_values["ai_summary"] = summary_data["ai_summary"]
-                if summary_data.get("detailed_summary"):
-                    update_values["detailed_summary"] = summary_data["detailed_summary"]
+            # Per-agent columns (summarizer, translator, sentiment) are already
+            # written incrementally by agent_worker via agent_db_writer.
+            # Here we only finalize merged fields (entities, finance_metadata).
+            from app.pipeline.agent_db_writer import finalize_merged_fields
 
-            translator = agent_data.get("translator", {})
-            if translator.get("success"):
-                td = translator.get("data", {})
-                if td.get("title_zh"):
-                    update_values["title_zh"] = td["title_zh"]
-                if td.get("full_text_zh"):
-                    update_values["full_text_zh"] = td["full_text_zh"]
-
-            sentiment = agent_data.get("sentiment", {})
-            if sentiment.get("success"):
-                update_values["sentiment_score"] = sentiment.get("data", {}).get("sentiment_score")
-                update_values["sentiment_label"] = sentiment.get("data", {}).get("sentiment_label")
-
-            # Collect entity results (unified "entity" agent or legacy "entity_*" agents)
-            all_entities = []
-            for agent_id, agent_result in agent_data.items():
-                if (agent_id == "entity" or agent_id.startswith("entity_")) and agent_result.get("success"):
-                    entities = agent_result.get("data", {}).get("entities", [])
-                    all_entities.extend(entities)
-            _CONF_MAP = {"high": 0.9, "medium": 0.5, "low": 0.1}
-            if all_entities:
-                update_values["entities"] = all_entities
-                # Primary entity = highest confidence
-                best = max(
-                    all_entities,
-                    key=lambda e: e.get("confidence", 0)
-                    if isinstance(e.get("confidence"), (int, float))
-                    else _CONF_MAP.get(str(e.get("confidence", "")), 0),
+            try:
+                merged = await finalize_merged_fields(article_id, agent_data, session)
+                update_values.update(merged)
+            except Exception:
+                logger.warning(
+                    "finalize_merged_fields failed for %s, proceeding without merged fields",
+                    article_id[:8], exc_info=True,
                 )
-                update_values["primary_entity"] = best.get("name")
-                update_values["primary_entity_type"] = best.get("type")
-
-            # Finance metadata (WebStock compatible ★)
-            # Preserve existing finance_metadata (e.g., ingested_by from ingest endpoint)
-            existing_article = await session.get(Article, article_id)
-            finance_meta = dict(existing_article.finance_metadata) if existing_article and existing_article.finance_metadata else {}
-            sentiment_result = agent_data.get("sentiment", {})
-            if sentiment_result.get("success"):
-                sd = sentiment_result.get("data", {})
-                if sd.get("finance_sentiment"):
-                    finance_meta["sentiment_tag"] = sd["finance_sentiment"]
-                if sd.get("investment_summary"):
-                    finance_meta["investment_summary"] = sd["investment_summary"]
-
-            tagger_result = agent_data.get("tagger", {})
-            if tagger_result.get("success"):
-                td = tagger_result.get("data", {})
-                if td.get("industry_tags"):
-                    finance_meta["industry_tags"] = td["industry_tags"]
-                if td.get("event_tags"):
-                    finance_meta["event_tags"] = td["event_tags"]
-
-            # Extract stock symbols from entity results
-            stock_entities = [e for e in all_entities if e.get("type") in ("stock", "index")]
-            if stock_entities:
-                symbols = []
-                for e in stock_entities:
-                    sym = e.get("symbol") or e.get("name", "")
-                    if sym:
-                        symbols.append(sym)
-                finance_meta["symbols"] = symbols
-
-            # Set market from entity agent primary_market
-            entity_result = agent_data.get("entity", {})
-            if entity_result.get("success"):
-                ed = entity_result.get("data", {})
-                if ed.get("primary_market"):
-                    finance_meta["market"] = ed["primary_market"]
-
-            if finance_meta:
-                update_values["finance_metadata"] = finance_meta
 
             stmt = (
                 update(Article)

@@ -278,8 +278,35 @@ function QueueMonitor() {
     {
       header: t("admin.queue.currentStage"),
       accessor: (r) =>
-        r.current_stage ? <StatusBadge status={r.current_stage} /> : "-",
-      className: "w-24 shrink-0",
+        r.agent_progress ? (
+          <div className="flex flex-wrap gap-1 items-center">
+            {Object.entries(r.agent_progress).map(([aid, info]) => (
+              <span
+                key={aid}
+                role="status"
+                aria-label={`${aid}: ${info.success ? "success" : "failed"}, ${info.duration_ms.toFixed(0)}ms`}
+                className={`inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium ${
+                  info.success
+                    ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                    : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+                }`}
+                title={`${info.duration_ms.toFixed(0)}ms · ${info.tokens_used} tokens${info.error ? ` · ${info.error}` : ""}`}
+              >
+                {aid}
+              </span>
+            ))}
+            {r.current_agent && (
+              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 animate-pulse">
+                {r.current_agent}...
+              </span>
+            )}
+          </div>
+        ) : r.current_stage ? (
+          <StatusBadge status={r.current_stage} />
+        ) : (
+          "-"
+        ),
+      className: "min-w-48 shrink-0",
     },
     {
       header: t("admin.queue.elapsed"),

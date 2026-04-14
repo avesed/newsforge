@@ -11,6 +11,7 @@ same system prompt + article block prefix.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -20,6 +21,7 @@ from app.pipeline import agent_queue as aq
 from app.pipeline.agents.base import AgentContext, AgentResult
 from app.pipeline.agents.registry import get_agent_registry
 from app.pipeline.events import record_event
+from app.pipeline.queue import QUEUE_STREAM
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,57 @@ def _serialize_agent_result(result: AgentResult) -> dict:
         "error": result.error,
         "data": result.data,
     }
+
+
+async def _persist_and_emit(redis, article_id: str, agent_id: str, serialized: dict) -> None:
+    """Per-agent: DB write + SSE event + Redis checkpoint. All best-effort."""
+    # 1. Write agent-specific columns to DB
+    from app.pipeline.agent_db_writer import write_agent_result
+
+    try:
+        await write_agent_result(article_id, agent_id, serialized)
+    except Exception:
+        logger.warning("Per-agent DB write failed: %s:%s", article_id[:8], agent_id, exc_info=True)
+
+    # 2. Emit SSE stream event (agent_complete)
+    try:
+        await redis.xadd(
+            QUEUE_STREAM,
+            {
+                "type": "agent_complete",
+                "article_id": article_id,
+                "agent_id": agent_id,
+                "success": "1" if serialized.get("success") else "0",
+                "duration_ms": str(round(serialized.get("duration_ms", 0))),
+                "tokens_used": str(serialized.get("tokens_used", 0)),
+                "error": (serialized.get("error") or "")[:200],
+            },
+            maxlen=500,
+            approximate=True,
+        )
+    except Exception:
+        logger.debug("SSE emit failed for %s:%s", article_id[:8], agent_id)
+
+    # 3. Update per-agent checkpoint in Redis Hash
+    try:
+        checkpoint_key = f"nf:agent:checkpoint:{article_id}"
+        await redis.hset(checkpoint_key, agent_id, json.dumps(serialized))
+        await redis.expire(checkpoint_key, 7200)
+    except Exception:
+        logger.debug("Checkpoint write failed for %s:%s", article_id[:8], agent_id)
+
+
+async def _emit_agent_start(redis, article_id: str, agent_id: str) -> None:
+    """Emit agent_start SSE event. Best-effort."""
+    try:
+        await redis.xadd(
+            QUEUE_STREAM,
+            {"type": "agent_start", "article_id": article_id, "agent_id": agent_id},
+            maxlen=500,
+            approximate=True,
+        )
+    except Exception:
+        logger.debug("SSE agent_start emit failed: %s:%s", article_id[:8], agent_id, exc_info=True)
 
 
 class AgentWorker:
@@ -226,26 +279,21 @@ class AgentWorker:
 
             # Run ready agents in parallel (prefix cache hits on prefill)
             if ready:
-                parallel_results = await asyncio.gather(
-                    *[agent.safe_execute(context) for agent in ready],
-                    return_exceptions=True,
-                )
-                for agent, res in zip(ready, parallel_results):
+                async def _run_one(agent):
+                    await _emit_agent_start(redis, context.article_id, agent.agent_id)
+                    res = await agent.safe_execute(context)
                     if isinstance(res, Exception):
-                        logger.exception(
-                            "Agent %s raised unexpected error", agent.agent_id,
-                        )
+                        # This shouldn't happen since safe_execute catches, but just in case
                         res = AgentResult(
-                            agent_id=agent.agent_id,
-                            success=False,
-                            data={},
-                            duration_ms=0,
-                            error=str(res)[:500],
+                            agent_id=agent.agent_id, success=False, data={},
+                            duration_ms=0, error=str(res)[:500],
                         )
                     context.agent_results[res.agent_id] = res
                     serialized = _serialize_agent_result(res)
                     results[res.agent_id] = serialized
-
+                    # Per-agent persist + emit
+                    await _persist_and_emit(redis, context.article_id, res.agent_id, serialized)
+                    # Record pipeline event (existing)
                     try:
                         await record_event(
                             context.article_id,
@@ -253,9 +301,28 @@ class AgentWorker:
                             "success" if res.success else "error",
                             duration_ms=res.duration_ms,
                             metadata={"tokens": res.tokens_used},
+                            error=res.error,
                         )
                     except Exception:
-                        pass
+                        logger.debug("Failed to record event for agent %s", res.agent_id)
+                    return res
+
+                parallel_results = await asyncio.gather(
+                    *[_run_one(agent) for agent in ready],
+                    return_exceptions=True,
+                )
+                # Handle any unexpected exceptions from _run_one itself
+                for agent, res in zip(ready, parallel_results):
+                    if isinstance(res, Exception):
+                        logger.exception("Agent wrapper %s raised error", agent.agent_id)
+                        err_result = AgentResult(
+                            agent_id=agent.agent_id, success=False, data={},
+                            duration_ms=0, error=str(res)[:500],
+                        )
+                        context.agent_results[err_result.agent_id] = err_result
+                        serialized = _serialize_agent_result(err_result)
+                        results[err_result.agent_id] = serialized
+                        await _persist_and_emit(redis, context.article_id, err_result.agent_id, serialized)
 
             # Run waiting agents sequentially (deps now available)
             for agent in waiting:
@@ -269,10 +336,12 @@ class AgentWorker:
                         agent.agent_id, failed_deps,
                     )
 
+                await _emit_agent_start(redis, context.article_id, agent.agent_id)
                 result = await agent.safe_execute(context)
                 context.agent_results[result.agent_id] = result
                 serialized = _serialize_agent_result(result)
                 results[result.agent_id] = serialized
+                await _persist_and_emit(redis, context.article_id, result.agent_id, serialized)
 
                 # Record pipeline event (best-effort)
                 try:

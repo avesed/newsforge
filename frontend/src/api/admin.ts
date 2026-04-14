@@ -380,6 +380,13 @@ export async function checkLLMHealth() {
 
 // --- Queue Monitoring ---
 
+export interface AgentProgress {
+  success: boolean;
+  duration_ms: number;
+  tokens_used: number;
+  error?: string;
+}
+
 export interface QueueArticle {
   article_id: string;
   title: string;
@@ -392,6 +399,8 @@ export interface QueueArticle {
   error?: string;
   position?: number;
   priority?: string;
+  agent_progress?: Record<string, AgentProgress>;
+  current_agent?: string;
 }
 
 export interface QueueStatus {

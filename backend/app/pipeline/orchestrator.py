@@ -7,6 +7,7 @@ Two responsibilities:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -523,9 +524,34 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
         results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
         return results
 
-    # Collect agent IDs to run, respecting checkpoint
-    completed_from_checkpoint = (checkpoint or {}).get("completed_agents", {})
-    failed_agent_ids = set((checkpoint or {}).get("failed_agents", []))
+    # Read per-agent checkpoint from Redis Hash
+    checkpoint_key = f"nf:agent:checkpoint:{article_id}"
+    redis = await get_redis()
+    try:
+        raw_checkpoint = await redis.hgetall(checkpoint_key)
+    except Exception:
+        logger.warning(
+            "Failed to read agent checkpoint for %s, running all agents",
+            article_id[:8], exc_info=True,
+        )
+        raw_checkpoint = {}
+    completed_from_checkpoint: dict[str, dict] = {}
+    failed_agent_ids: set[str] = set()
+    if raw_checkpoint:
+        for aid_raw, data_raw in raw_checkpoint.items():
+            aid = aid_raw.decode() if isinstance(aid_raw, bytes) else aid_raw
+            try:
+                parsed = json.loads(data_raw if isinstance(data_raw, str) else data_raw.decode())
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.warning(
+                    "Corrupt checkpoint entry for %s agent %s, skipping",
+                    article_id[:8], aid,
+                )
+                continue
+            if parsed.get("success"):
+                completed_from_checkpoint[aid] = parsed
+            else:
+                failed_agent_ids.add(aid)
 
     if completed_from_checkpoint:
         for aid, adata in completed_from_checkpoint.items():
@@ -566,8 +592,6 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     # Submit agent group to unified queue
     from app.pipeline import agent_queue as aq
 
-    redis = await get_redis()
-
     group_id, result_key = await aq.submit_agent_group(
         redis,
         group_type="article",
@@ -595,17 +619,15 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             f"Agent worker error ({agent_results['_error']}) for article: {title[:80]}"
         )
 
-    # Merge results back
+    # Merge results back (worker already wrote per-agent checkpoints to Redis)
     for aid, result_data in agent_results.items():
         results["agents"][aid] = result_data
-        # Update checkpoint
-        article_data["_checkpoint"].setdefault("completed_agents", {})
-        if result_data.get("success"):
-            article_data["_checkpoint"]["completed_agents"][aid] = result_data
-        else:
-            article_data["_checkpoint"].setdefault("failed_agents", [])
-            if aid not in article_data["_checkpoint"]["failed_agents"]:
-                article_data["_checkpoint"]["failed_agents"].append(aid)
+
+    # Clean up per-agent checkpoint (all agents done)
+    try:
+        await redis.delete(f"nf:agent:checkpoint:{article_id}")
+    except Exception:
+        logger.debug("Failed to cleanup agent checkpoint for %s", article_id[:8])
 
     total_duration = (time.monotonic() - pipeline_start) * 1000
     results["pipeline_duration_ms"] = total_duration

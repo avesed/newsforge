@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { getQueueStatus, type QueueStatus } from "@/api/admin";
+import { getQueueStatus, type QueueStatus, type QueueArticle, type AgentProgress } from "@/api/admin";
 
 interface QueueEvent {
   type: string;
@@ -13,6 +13,9 @@ interface QueueEvent {
   priority?: string;
   state?: string;                    // circuit breaker state
   consecutive_failures?: string;     // circuit breaker failure count
+  agent_id?: string;
+  success?: string;
+  tokens_used?: string;
 }
 
 export function useQueueStream() {
@@ -183,45 +186,82 @@ function applyEvent(
       );
       break;
 
-    case "completed":
+    case "agent_start": {
+      if (!event.agent_id) break;
+      const agentId = event.agent_id;
+      next.processing = state.processing.map((a) => {
+        if (a.article_id !== id) return a;
+        const updated: QueueArticle = { ...a, current_stage: `agent:${agentId}`, current_agent: agentId };
+        return updated;
+      });
+      break;
+    }
+
+    case "agent_complete": {
+      if (!event.agent_id) break;
+      const agentId = event.agent_id;
+      next.processing = state.processing.map((a) => {
+        if (a.article_id !== id) return a;
+        const progress = { ...(a.agent_progress ?? {}) };
+        const agentResult: AgentProgress = {
+          success: event.success === "1",
+          duration_ms: parseFloat(event.duration_ms ?? "0"),
+          tokens_used: parseInt(event.tokens_used ?? "0", 10),
+        };
+        if (event.error) agentResult.error = event.error;
+        progress[agentId] = agentResult;
+        const updated: QueueArticle = { ...a, agent_progress: progress };
+        if (a.current_agent === agentId) {
+          delete updated.current_agent;
+        }
+        return updated;
+      });
+      break;
+    }
+
+    case "completed": {
+      const completedItem = state.processing.find((a) => a.article_id === id);
       next.processing = state.processing.filter((a) => a.article_id !== id);
-      next.recent = [
-        {
-          article_id: id,
-          title:
-            state.processing.find((a) => a.article_id === id)?.title ?? "",
-          status: "completed",
-          duration_ms: event.duration_ms ?? "0",
-          completed_at: String(Date.now() / 1000),
-        },
-        ...state.recent,
-      ].slice(0, 50);
+      const completedEntry: QueueArticle = {
+        article_id: id,
+        title: completedItem?.title ?? "",
+        status: "completed",
+        duration_ms: event.duration_ms ?? "0",
+        completed_at: String(Date.now() / 1000),
+      };
+      if (completedItem?.agent_progress) {
+        completedEntry.agent_progress = completedItem.agent_progress;
+      }
+      next.recent = [completedEntry, ...state.recent].slice(0, 50);
       next.counts = {
         ...state.counts,
         processing: Math.max(0, state.counts.processing - 1),
         completed: state.counts.completed + 1,
       };
       break;
+    }
 
-    case "failed":
+    case "failed": {
+      const failedItem = state.processing.find((a) => a.article_id === id);
       next.processing = state.processing.filter((a) => a.article_id !== id);
-      next.recent = [
-        {
-          article_id: id,
-          title:
-            state.processing.find((a) => a.article_id === id)?.title ?? "",
-          status: "failed",
-          error: event.error ?? "",
-          completed_at: String(Date.now() / 1000),
-        },
-        ...state.recent,
-      ].slice(0, 50);
+      const failedEntry: QueueArticle = {
+        article_id: id,
+        title: failedItem?.title ?? "",
+        status: "failed",
+        error: event.error ?? "",
+        completed_at: String(Date.now() / 1000),
+      };
+      if (failedItem?.agent_progress) {
+        failedEntry.agent_progress = failedItem.agent_progress;
+      }
+      next.recent = [failedEntry, ...state.recent].slice(0, 50);
       next.counts = {
         ...state.counts,
         processing: Math.max(0, state.counts.processing - 1),
         failed: state.counts.failed + 1,
       };
       break;
+    }
 
     case "concurrency":
       next.concurrency = {
