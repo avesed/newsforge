@@ -61,6 +61,17 @@ async def poll_feeds() -> None:
 
             new_count = 0
             for raw in raw_articles:
+                # Resolve Google News redirect URLs to real article URLs before dedup
+                if "news.google.com/rss/articles/" in raw.url:
+                    from app.content.fetcher import resolve_google_news_url
+
+                    real_url = await resolve_google_news_url(raw.url)
+                    if real_url:
+                        raw.url = real_url
+                    else:
+                        logger.debug("Skip unresolvable Google News URL: %s", raw.url[:80])
+                        continue
+
                 # Dedup check
                 is_dup, norm_url, detected_lang = await dedup.is_duplicate(raw.url, raw.title)
                 if is_dup:

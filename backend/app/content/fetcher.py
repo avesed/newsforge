@@ -102,7 +102,7 @@ async def fetch_content(
     """
     # Layer 0: Resolve Google News encrypted redirect URLs
     if "news.google.com/rss/articles/" in url:
-        real_url = await _resolve_google_news_url(url)
+        real_url = await resolve_google_news_url(url)
         if real_url:
             logger.info("Resolved Google News URL → %s", real_url[:100])
             url = real_url
@@ -144,7 +144,7 @@ async def fetch_content(
     return None
 
 
-async def _resolve_google_news_url(google_url: str) -> str | None:
+async def resolve_google_news_url(google_url: str) -> str | None:
     """Resolve a Google News encrypted URL to the real article URL.
 
     Two-step HTTP decode via Google's batchexecute RPC:
