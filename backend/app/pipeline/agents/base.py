@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 SHARED_SYSTEM_PROMPT = "你是新闻分析专家，请按要求处理新闻。"
 
 
+def strip_code_fence(content: str) -> str:
+    """Strip leading/trailing ```json ... ``` markdown fences if present.
+
+    Some models ignore response_format=json_object and wrap the JSON in a
+    markdown code block. This helper makes json.loads tolerant of that.
+    """
+    s = content.strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 :]
+        if s.endswith("```"):
+            s = s[: -3]
+    return s.strip()
+
+
 @dataclass
 class AgentContext:
     """Input context available to all agents."""
@@ -138,7 +154,7 @@ class AgentDefinition:
         )
         response = await llm.chat(request, purpose=purpose)
         try:
-            data = json.loads(response.content)
+            data = json.loads(strip_code_fence(response.content))
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",
@@ -233,7 +249,7 @@ class AgentDefinition:
         )
         response = await llm.chat(request, purpose=purpose)
         try:
-            data = json.loads(response.content)
+            data = json.loads(strip_code_fence(response.content))
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",
