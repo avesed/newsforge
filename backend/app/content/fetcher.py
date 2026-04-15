@@ -27,6 +27,40 @@ FETCH_TIMEOUT = 30
 _crawler = None
 _crawler_lock = asyncio.Lock()
 
+# Google News resolver throttle: min interval between requests + retry on 429.
+# Google's batchexecute endpoint rate-limits aggressively; pacing avoids 429 bursts.
+GNEWS_MIN_INTERVAL_S = 1.2
+GNEWS_MAX_RETRIES = 4
+GNEWS_BACKOFF_BASE_S = 2.0
+GNEWS_BACKOFF_CAP_S = 30.0
+_gnews_lock = asyncio.Lock()
+_gnews_last_request_at = 0.0
+_gnews_cooldown_until = 0.0  # set by 429 responses; new requests wait past this
+
+
+async def _gnews_acquire() -> None:
+    """Pace Google News HTTP calls: enforce min interval + respect 429 cooldown."""
+    global _gnews_last_request_at
+    loop = asyncio.get_running_loop()
+    async with _gnews_lock:
+        now = loop.time()
+        wait = max(
+            GNEWS_MIN_INTERVAL_S - (now - _gnews_last_request_at),
+            _gnews_cooldown_until - now,
+        )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _gnews_last_request_at = loop.time()
+
+
+def _gnews_note_429(retry_after: float) -> None:
+    """Extend global cooldown so concurrent callers also back off."""
+    global _gnews_cooldown_until
+    loop = asyncio.get_running_loop()
+    target = loop.time() + retry_after
+    if target > _gnews_cooldown_until:
+        _gnews_cooldown_until = target
+
 
 @dataclass
 class FetchResult:
@@ -161,13 +195,31 @@ async def resolve_google_news_url(google_url: str) -> str | None:
 
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            # Step 1: fetch article page to get decoding params
-            signature, timestamp = await _get_gnews_decode_params(client, base64_str)
-            if not signature or not timestamp:
-                return None
+            for attempt in range(GNEWS_MAX_RETRIES + 1):
+                try:
+                    # Step 1: fetch article page to get decoding params
+                    signature, timestamp = await _get_gnews_decode_params(client, base64_str)
+                    if not signature or not timestamp:
+                        return None
 
-            # Step 2: call batchexecute RPC to decode
-            return await _gnews_batch_decode(client, base64_str, signature, timestamp)
+                    # Step 2: call batchexecute RPC to decode
+                    return await _gnews_batch_decode(client, base64_str, signature, timestamp)
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code != 429 or attempt >= GNEWS_MAX_RETRIES:
+                        raise
+                    retry_after_hdr = e.response.headers.get("Retry-After")
+                    try:
+                        retry_after = float(retry_after_hdr) if retry_after_hdr else 0.0
+                    except ValueError:
+                        retry_after = 0.0
+                    backoff = min(GNEWS_BACKOFF_CAP_S, GNEWS_BACKOFF_BASE_S * (2 ** attempt))
+                    wait = max(backoff, retry_after)
+                    _gnews_note_429(wait)
+                    logger.warning(
+                        "Google News 429 (attempt %d/%d), backing off %.1fs",
+                        attempt + 1, GNEWS_MAX_RETRIES, wait,
+                    )
+            return None
     except Exception:
         logger.warning("Google News URL decode failed: %s", google_url[:80], exc_info=True)
         return None
@@ -182,8 +234,15 @@ async def _get_gnews_decode_params(
     for prefix in ("articles", "rss/articles"):
         url = f"https://news.google.com/{prefix}/{base64_str}"
         try:
+            await _gnews_acquire()
             resp = await client.get(url)
+            if resp.status_code == 429:
+                resp.raise_for_status()  # let caller handle 429 retry
             resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise
+            continue
         except httpx.HTTPError:
             continue
 
@@ -212,6 +271,7 @@ async def _gnews_batch_decode(
         f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{base64_str}",{timestamp},"{signature}"]',
     ]
     body = f"f.req={quote(json.dumps([[payload]]))}"
+    await _gnews_acquire()
     resp = await client.post(
         "https://news.google.com/_/DotsSplashUi/data/batchexecute",
         headers={
