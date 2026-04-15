@@ -24,7 +24,7 @@ dependencies = [
     # RSS & Content
     "feedparser>=6.0.11",
     "crawl4ai>=0.4.0",
-    "httpx>=0.28.0",
+    "httpx[http2]>=0.28.0",
     # NLP & Dedup
     "simhash>=2.1.2",
     "datasketch>=1.6.0",

@@ -27,39 +27,48 @@ FETCH_TIMEOUT = 30
 _crawler = None
 _crawler_lock = asyncio.Lock()
 
-# Google News resolver throttle: min interval between requests + retry on 429.
-# Google's batchexecute endpoint rate-limits aggressively; pacing avoids 429 bursts.
-GNEWS_MIN_INTERVAL_S = 1.2
-GNEWS_MAX_RETRIES = 4
+# Google News resolver: Google's gateway blocks HTTP/1.1 POSTs to /batchexecute
+# with 429→sorry-page. HTTP/2 matches what Chrome sends and is accepted normally.
+# Keep a process-level client to reuse the HTTP/2 connection + cookie jar.
+GNEWS_MAX_RETRIES = 3
 GNEWS_BACKOFF_BASE_S = 2.0
 GNEWS_BACKOFF_CAP_S = 30.0
-_gnews_lock = asyncio.Lock()
-_gnews_last_request_at = 0.0
-_gnews_cooldown_until = 0.0  # set by 429 responses; new requests wait past this
+
+_GNEWS_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "Sec-Ch-Ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+_gnews_client: httpx.AsyncClient | None = None
+_gnews_client_lock = asyncio.Lock()
 
 
-async def _gnews_acquire() -> None:
-    """Pace Google News HTTP calls: enforce min interval + respect 429 cooldown."""
-    global _gnews_last_request_at
-    loop = asyncio.get_running_loop()
-    async with _gnews_lock:
-        now = loop.time()
-        wait = max(
-            GNEWS_MIN_INTERVAL_S - (now - _gnews_last_request_at),
-            _gnews_cooldown_until - now,
-        )
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _gnews_last_request_at = loop.time()
-
-
-def _gnews_note_429(retry_after: float) -> None:
-    """Extend global cooldown so concurrent callers also back off."""
-    global _gnews_cooldown_until
-    loop = asyncio.get_running_loop()
-    target = loop.time() + retry_after
-    if target > _gnews_cooldown_until:
-        _gnews_cooldown_until = target
+async def _get_gnews_client() -> httpx.AsyncClient:
+    """Process-level httpx client for Google News (http2 required, cookies kept)."""
+    global _gnews_client
+    if _gnews_client is not None:
+        return _gnews_client
+    async with _gnews_client_lock:
+        if _gnews_client is None:
+            _gnews_client = httpx.AsyncClient(
+                http2=True,
+                timeout=15,
+                follow_redirects=True,
+                headers=_GNEWS_BROWSER_HEADERS,
+            )
+    return _gnews_client
 
 
 @dataclass
@@ -193,33 +202,30 @@ async def resolve_google_news_url(google_url: str) -> str | None:
         return None
     base64_str = path_parts[-1]
 
+    client = await _get_gnews_client()
     try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            for attempt in range(GNEWS_MAX_RETRIES + 1):
+        for attempt in range(GNEWS_MAX_RETRIES + 1):
+            try:
+                signature, timestamp = await _get_gnews_decode_params(client, base64_str)
+                if not signature or not timestamp:
+                    return None
+                return await _gnews_batch_decode(client, base64_str, signature, timestamp)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code != 429 or attempt >= GNEWS_MAX_RETRIES:
+                    raise
+                retry_after_hdr = e.response.headers.get("Retry-After")
                 try:
-                    # Step 1: fetch article page to get decoding params
-                    signature, timestamp = await _get_gnews_decode_params(client, base64_str)
-                    if not signature or not timestamp:
-                        return None
-
-                    # Step 2: call batchexecute RPC to decode
-                    return await _gnews_batch_decode(client, base64_str, signature, timestamp)
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code != 429 or attempt >= GNEWS_MAX_RETRIES:
-                        raise
-                    retry_after_hdr = e.response.headers.get("Retry-After")
-                    try:
-                        retry_after = float(retry_after_hdr) if retry_after_hdr else 0.0
-                    except ValueError:
-                        retry_after = 0.0
-                    backoff = min(GNEWS_BACKOFF_CAP_S, GNEWS_BACKOFF_BASE_S * (2 ** attempt))
-                    wait = max(backoff, retry_after)
-                    _gnews_note_429(wait)
-                    logger.warning(
-                        "Google News 429 (attempt %d/%d), backing off %.1fs",
-                        attempt + 1, GNEWS_MAX_RETRIES, wait,
-                    )
-            return None
+                    retry_after = float(retry_after_hdr) if retry_after_hdr else 0.0
+                except ValueError:
+                    retry_after = 0.0
+                backoff = min(GNEWS_BACKOFF_CAP_S, GNEWS_BACKOFF_BASE_S * (2 ** attempt))
+                wait = max(backoff, retry_after)
+                logger.warning(
+                    "Google News 429 (attempt %d/%d), backing off %.1fs",
+                    attempt + 1, GNEWS_MAX_RETRIES, wait,
+                )
+                await asyncio.sleep(wait)
+        return None
     except Exception:
         logger.warning("Google News URL decode failed: %s", google_url[:80], exc_info=True)
         return None
@@ -234,10 +240,7 @@ async def _get_gnews_decode_params(
     for prefix in ("articles", "rss/articles"):
         url = f"https://news.google.com/{prefix}/{base64_str}"
         try:
-            await _gnews_acquire()
             resp = await client.get(url)
-            if resp.status_code == 429:
-                resp.raise_for_status()  # let caller handle 429 retry
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
@@ -271,15 +274,17 @@ async def _gnews_batch_decode(
         f'["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],"{base64_str}",{timestamp},"{signature}"]',
     ]
     body = f"f.req={quote(json.dumps([[payload]]))}"
-    await _gnews_acquire()
     resp = await client.post(
         "https://news.google.com/_/DotsSplashUi/data/batchexecute",
         headers={
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-            ),
+            "Accept": "*/*",
+            "Origin": "https://news.google.com",
+            "Referer": f"https://news.google.com/rss/articles/{base64_str}",
+            "X-Same-Domain": "1",
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         },
         content=body,
     )
