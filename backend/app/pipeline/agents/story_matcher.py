@@ -102,8 +102,8 @@ class BatchStoryMatcher:
 
         try:
             response = await llm.chat(request, purpose="story_matcher")
-            from app.pipeline.agents.base import strip_code_fence
-            data = json.loads(strip_code_fence(response.content))
+            from app.pipeline.agents.base import robust_json_loads
+            data = robust_json_loads(response.content)
             tokens = response.usage.total_tokens
         except Exception:
             logger.exception("Story matcher LLM call failed")

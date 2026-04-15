@@ -42,6 +42,25 @@ def strip_code_fence(content: str) -> str:
     return s.strip()
 
 
+def robust_json_loads(content: str) -> Any:
+    """Parse LLM JSON output tolerantly.
+
+    Handles two real-world failure modes from non-compliant providers:
+    1. Responses wrapped in ```json ... ``` markdown fences.
+    2. Malformed JSON (unescaped quotes/newlines inside Chinese strings,
+       trailing commas, etc.) — falls back to json_repair.
+
+    Raises json.JSONDecodeError if repair also fails.
+    """
+    stripped = strip_code_fence(content)
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        from json_repair import repair_json
+        repaired = repair_json(stripped)
+        return json.loads(repaired)
+
+
 @dataclass
 class AgentContext:
     """Input context available to all agents."""
@@ -154,7 +173,7 @@ class AgentDefinition:
         )
         response = await llm.chat(request, purpose=purpose)
         try:
-            data = json.loads(strip_code_fence(response.content))
+            data = robust_json_loads(response.content)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",
@@ -249,7 +268,7 @@ class AgentDefinition:
         )
         response = await llm.chat(request, purpose=purpose)
         try:
-            data = json.loads(strip_code_fence(response.content))
+            data = robust_json_loads(response.content)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",

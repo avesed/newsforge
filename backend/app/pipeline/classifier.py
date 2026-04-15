@@ -191,9 +191,9 @@ async def _classify_batch(articles: list[dict]) -> list[ClassifyResult]:
 
 def _parse_response(content: str, expected_count: int) -> list[ClassifyResult]:
     """Parse LLM response into ClassifyResult list."""
-    from app.pipeline.agents.base import strip_code_fence
+    from app.pipeline.agents.base import robust_json_loads
     try:
-        data = json.loads(strip_code_fence(content))
+        data = robust_json_loads(content)
 
         # Handle both single object and array, and wrapped responses
         if isinstance(data, dict):

@@ -42,6 +42,7 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "python-multipart>=0.0.12",
     "orjson>=3.10.0",
+    "json-repair>=0.30.0",
     "pyyaml>=6.0.2",
 ]
 
