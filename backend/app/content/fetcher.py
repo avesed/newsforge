@@ -79,6 +79,7 @@ class FetchResult:
     title: str | None = None
     provider: str = "crawl4ai"
     word_count: int = 0
+    final_url: str | None = None  # resolved URL when input was a redirect (e.g. Google News)
 
 
 async def _get_crawler():
@@ -144,10 +145,12 @@ async def fetch_content(
     Returns None if all providers fail or content is too short.
     """
     # Layer 0: Resolve Google News encrypted redirect URLs
+    resolved_url: str | None = None
     if "news.google.com/rss/articles/" in url:
         real_url = await resolve_google_news_url(url)
         if real_url:
             logger.info("Resolved Google News URL → %s", real_url[:100])
+            resolved_url = real_url
             url = real_url
         else:
             logger.warning("Failed to resolve Google News URL: %s", url[:80])
@@ -164,16 +167,21 @@ async def fetch_content(
             title=rss_title,
             provider="rss",
             word_count=len(text.split()),
+            final_url=resolved_url,
         )
 
     # Layer 2: Crawl4AI (primary)
     result = await _fetch_crawl4ai(url)
     if result:
+        if resolved_url:
+            result.final_url = resolved_url
         return result
 
     # Layer 3: Plain HTTP fallback (some sites block headless browsers but allow normal requests)
     result = await _fetch_httpx(url)
     if result:
+        if resolved_url:
+            result.final_url = resolved_url
         return result
 
     # Layer 4: Tavily API (optional fallback)
@@ -181,6 +189,8 @@ async def fetch_content(
     if settings.tavily_api_key:
         result = await _fetch_tavily(url, settings.tavily_api_key)
         if result:
+            if resolved_url:
+                result.final_url = resolved_url
             return result
 
     logger.warning("All content providers failed for URL: %s", url[:100])
@@ -237,7 +247,7 @@ async def _get_gnews_decode_params(
     """Fetch signature and timestamp from the Google News article page."""
     from selectolax.parser import HTMLParser
 
-    for prefix in ("articles", "rss/articles"):
+    for prefix in ("rss/articles", "articles"):
         url = f"https://news.google.com/{prefix}/{base64_str}"
         try:
             resp = await client.get(url)

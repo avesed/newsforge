@@ -141,6 +141,20 @@ class DedupEngine:
 
         return False, norm_url, detected_lang
 
+    async def is_url_seen(self, url: str) -> tuple[bool, str]:
+        """Check only URL dedup (no title check). Returns (seen, normalized_url)."""
+        norm_url = normalize_url(url)
+        url_key = f"nf:dedup:url:{hashlib.md5(norm_url.encode()).hexdigest()}"
+        seen = bool(await self._redis.exists(url_key))
+        return seen, norm_url
+
+    async def mark_url_seen(self, url: str) -> str:
+        """Mark a URL as seen without dedup-checking. Returns normalized URL."""
+        norm_url = normalize_url(url)
+        url_key = f"nf:dedup:url:{hashlib.md5(norm_url.encode()).hexdigest()}"
+        await self._redis.setex(url_key, self._window_hours * 3600, "1")
+        return norm_url
+
     async def _find_similar_title(self, title_hash: str) -> bool:
         """Check if any recent title hash is within Hamming distance threshold."""
         # Use a Redis sorted set with timestamp scores

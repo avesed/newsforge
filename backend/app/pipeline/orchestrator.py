@@ -62,18 +62,10 @@ async def poll_feeds() -> None:
 
             new_count = 0
             for raw in raw_articles:
-                # Resolve Google News redirect URLs to real article URLs before dedup
-                if "news.google.com/rss/articles/" in raw.url:
-                    from app.content.fetcher import resolve_google_news_url
-
-                    real_url = await resolve_google_news_url(raw.url)
-                    if real_url:
-                        raw.url = real_url
-                    else:
-                        logger.debug("Skip unresolvable Google News URL: %s", raw.url[:80])
-                        continue
-
-                # Dedup check
+                # Google News URLs are resolved lazily in the pipeline consumer,
+                # not here. Dedup uses the Google redirect URL at poll-time so the
+                # same redirect isn't re-enqueued; the consumer marks the real URL
+                # as seen once resolution completes.
                 is_dup, norm_url, detected_lang = await dedup.is_duplicate(raw.url, raw.title)
                 if is_dup:
                     continue
@@ -397,6 +389,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
                 "provider": content.provider,
                 "word_count": content.word_count,
                 "language": content.language,
+                "final_url": content.final_url,
             }
             await record_event(
                 article_id, "fetch", "success",

@@ -278,6 +278,38 @@ class PipelineConsumer:
         content_info = pipeline_results.get("content")
         agent_data = pipeline_results.get("agents", {})
 
+        # If the pipeline resolved a redirect (e.g. Google News → real URL),
+        # update Article.url and register the real URL in the dedup index so
+        # both the redirect and the real URL prevent future re-enqueue.
+        final_url = content_info.get("final_url") if content_info else None
+        original_url = article_data.get("url")
+        url_updated_to: str | None = None
+        if final_url and original_url and final_url != original_url:
+            from app.pipeline.dedup import DedupEngine
+
+            redis = await get_redis()
+            dedup = DedupEngine(redis)
+            seen, norm_real = await dedup.is_url_seen(final_url)
+            if seen:
+                logger.info(
+                    "Resolved URL already in dedup index, marking %s as duplicate: %s",
+                    article_id[:8], norm_real[:80],
+                )
+                from app.models.article import Article
+                from sqlalchemy import update as sql_update
+                async with get_session_factory()() as session:
+                    await session.execute(
+                        sql_update(Article)
+                        .where(Article.id == article_id)
+                        .values(content_status="duplicate")
+                    )
+                    await session.commit()
+                return
+            url_updated_to = norm_real
+            await dedup.mark_url_seen(final_url)
+            # Also re-affirm the redirect URL (original) so TTL refreshes
+            await dedup.mark_url_seen(original_url)
+
         factory = get_session_factory()
         async with factory() as session:
             from sqlalchemy import select, update
@@ -310,6 +342,8 @@ class PipelineConsumer:
             # Build update values (aligned with Article model from migration 002)
             cat_slugs = [c.get("slug") for c in classification.get("categories", [])]
             update_values: dict = {
+                # Update URL to resolved real URL if Google News was deferred
+                **({"url": url_updated_to} if url_updated_to else {}),
                 # Store cleaned full text if available
                 **({"full_text": cleaned_text} if cleaned_text else {}),
                 "primary_category_id": category_id,
