@@ -329,10 +329,10 @@ async def _clean_content(raw_text: str, title: str) -> tuple[str, int]:
 async def run_pipeline(article_id: str, article_data: dict, progress_callback=None) -> dict[str, Any]:
     """Run the full dynamic agent pipeline for one article.
 
-    Phase 0: Classification (multi-label + value scoring + market impact)
     Phase 1: Content fetch (Crawl4AI with fallback chain)
-    Phase 2: Dynamic agents (parallel via asyncio.gather, respecting dependencies)
-    Phase 3: Post-processing (embed + store)
+    Phase 2: Content cleaning (LLM boilerplate removal)
+    Phase 3: Classification (multi-label + value scoring + market impact) on cleaned full text
+    Phase 4: Dynamic agents (parallel via asyncio.gather, respecting dependencies)
 
     Returns a dict with all pipeline results for DB storage.
     """
@@ -356,75 +356,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     logger.info("Pipeline start: %s", title[:80])
     results: dict[str, Any] = {"article_id": article_id, "agents": {}}
     checkpoint = article_data.get("_checkpoint")
-
-    # --- Phase 0: Classification ---
-    await _report_progress("classify")
-
-    if checkpoint and "classification" in checkpoint:
-        # Restore classification from checkpoint
-        results["classification"] = checkpoint["classification"]
-        categories = [c["slug"] for c in checkpoint["classification"]["categories"]]
-        value_score = checkpoint["classification"]["value_score"]
-        has_market_impact = checkpoint["classification"]["has_market_impact"]
-        checkpoint_stages = [k for k in checkpoint if k != "classification"]
-        logger.info(
-            "Restored classification from checkpoint: categories=%s value=%d (also cached: %s)",
-            categories, value_score, checkpoint_stages,
-        )
-        is_default = checkpoint["classification"].get("primary_category") == "other" and value_score == 0
-    else:
-        classify_start = time.monotonic()
-        classify_results = await classify_articles([{"title": title, "summary": summary}])
-        classification = classify_results[0]
-        classify_ms = (time.monotonic() - classify_start) * 1000
-
-        categories = classification.category_slugs
-        value_score = classification.value_score
-        has_market_impact = classification.has_market_impact
-
-        results["classification"] = {
-            "categories": [{"slug": c.slug, "confidence": c.confidence} for c in classification.categories],
-            "primary_category": classification.primary_category,
-            "tags": classification.tags,
-            "value_score": value_score,
-            "value_reason": classification.value_reason,
-            "has_market_impact": has_market_impact,
-            "market_impact_hint": classification.market_impact_hint,
-        }
-
-        is_default = classification.primary_category == "other" and value_score == 0
-        classify_status = "warning" if is_default else "success"
-        await record_event(
-            article_id, "classify", classify_status,
-            duration_ms=classify_ms,
-            metadata={
-                "categories": categories,
-                "value_score": value_score,
-                "has_market_impact": has_market_impact,
-            },
-            error="Classification returned defaults — LLM may have failed" if is_default else None,
-        )
-
-        logger.info(
-            "Classified: categories=%s value=%d market_impact=%s (%.0fms)",
-            categories, value_score, has_market_impact, classify_ms,
-        )
-
-    # Save classification to checkpoint
     article_data.setdefault("_checkpoint", {})
-    if not checkpoint or "classification" not in (checkpoint or {}):
-        article_data["_checkpoint"]["classification"] = results["classification"]
-
-    # Classification failure → fail-open with partial processing
-    if is_default:
-        logger.warning(
-            "Classification returned defaults for article: %s — continuing with partial processing",
-            title[:80],
-        )
-        # Continue with no agents — article will be stored with basic info
-        results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
-        results["partial"] = True
-        return results
 
     # --- Phase 1: Content fetch ---
     await _report_progress("fetch")
@@ -487,7 +419,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             article_data["_checkpoint"]["content_full_text"] = content.full_text
             article_data["_checkpoint"]["content_language"] = content.language
 
-    # --- Phase 1.5: Content cleaning ---
+    # --- Phase 2: Content cleaning ---
     await _report_progress("clean")
     cleaned_text = None
 
@@ -514,7 +446,78 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if not checkpoint or "cleaned_text" not in (checkpoint or {}):
         article_data["_checkpoint"]["cleaned_text"] = cleaned_text
 
-    # --- Phase 2+3: Dynamic agents (via unified agent queue) ---
+    # --- Phase 3: Classification (uses cleaned full text to prime prompt cache) ---
+    await _report_progress("classify")
+
+    classifier_full_text = cleaned_text if cleaned_text else (content.full_text if content else None)
+
+    if checkpoint and "classification" in checkpoint:
+        results["classification"] = checkpoint["classification"]
+        categories = [c["slug"] for c in checkpoint["classification"]["categories"]]
+        value_score = checkpoint["classification"]["value_score"]
+        has_market_impact = checkpoint["classification"]["has_market_impact"]
+        logger.info(
+            "Restored classification from checkpoint: categories=%s value=%d",
+            categories, value_score,
+        )
+        is_default = (
+            checkpoint["classification"].get("primary_category") == "other"
+            and value_score == 0
+        )
+    else:
+        classify_start = time.monotonic()
+        classify_input = {"title": title, "summary": summary}
+        if classifier_full_text:
+            classify_input["full_text"] = classifier_full_text
+        classify_results = await classify_articles([classify_input])
+        classification = classify_results[0]
+        classify_ms = (time.monotonic() - classify_start) * 1000
+
+        categories = classification.category_slugs
+        value_score = classification.value_score
+        has_market_impact = classification.has_market_impact
+
+        results["classification"] = {
+            "categories": [{"slug": c.slug, "confidence": c.confidence} for c in classification.categories],
+            "primary_category": classification.primary_category,
+            "tags": classification.tags,
+            "value_score": value_score,
+            "value_reason": classification.value_reason,
+            "has_market_impact": has_market_impact,
+            "market_impact_hint": classification.market_impact_hint,
+        }
+
+        is_default = classification.primary_category == "other" and value_score == 0
+        classify_status = "warning" if is_default else "success"
+        await record_event(
+            article_id, "classify", classify_status,
+            duration_ms=classify_ms,
+            metadata={
+                "categories": categories,
+                "value_score": value_score,
+                "has_market_impact": has_market_impact,
+                "used_full_text": classifier_full_text is not None,
+            },
+            error="Classification returned defaults — LLM may have failed" if is_default else None,
+        )
+
+        logger.info(
+            "Classified: categories=%s value=%d market_impact=%s full_text=%s (%.0fms)",
+            categories, value_score, has_market_impact,
+            bool(classifier_full_text), classify_ms,
+        )
+
+    if not checkpoint or "classification" not in (checkpoint or {}):
+        article_data["_checkpoint"]["classification"] = results["classification"]
+
+    if is_default:
+        logger.warning(
+            "Classification returned defaults for article: %s — marking partial",
+            title[:80],
+        )
+        results["partial"] = True
+
+    # --- Phase 4: Dynamic agents (via unified agent queue) ---
     await _report_progress("agents")
     registry = get_agent_registry()
     phase_agents = registry.resolve_agents(categories, value_score, has_market_impact)

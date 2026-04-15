@@ -659,8 +659,9 @@ function PipelineEvents() {
           className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
         >
           <option value="all">{t("admin.allStages")}</option>
-          <option value="classify">classify</option>
           <option value="fetch">fetch</option>
+          <option value="clean">clean</option>
+          <option value="classify">classify</option>
           <option value="analyze">analyze</option>
           <option value="embed">embed</option>
         </select>
