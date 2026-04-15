@@ -28,12 +28,14 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Check if this is the first admin
+    # Bootstrap: if no admin exists yet, promote this registrant to admin.
+    # If FIRST_ADMIN_EMAIL is configured, it acts as a whitelist — only that
+    # email may claim the bootstrap admin slot.
     settings = get_settings()
     role = "user"
-    if settings.first_admin_email and body.email == settings.first_admin_email:
-        admin_exists = await db.execute(select(User).where(User.role == "admin"))
-        if not admin_exists.scalar_one_or_none():
+    admin_exists = await db.execute(select(User).where(User.role == "admin"))
+    if not admin_exists.scalar_one_or_none():
+        if not settings.first_admin_email or body.email == settings.first_admin_email:
             role = "admin"
 
     user = User(
