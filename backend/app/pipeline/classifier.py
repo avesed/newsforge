@@ -189,10 +189,22 @@ async def _classify_batch(articles: list[dict]) -> list[ClassifyResult]:
         return [_default_result() for _ in articles]
 
 
+def _strip_code_fence(content: str) -> str:
+    """Strip leading/trailing ```json ... ``` markdown fences if present."""
+    s = content.strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 :]
+        if s.endswith("```"):
+            s = s[: -3]
+    return s.strip()
+
+
 def _parse_response(content: str, expected_count: int) -> list[ClassifyResult]:
     """Parse LLM response into ClassifyResult list."""
     try:
-        data = json.loads(content)
+        data = json.loads(_strip_code_fence(content))
 
         # Handle both single object and array, and wrapped responses
         if isinstance(data, dict):

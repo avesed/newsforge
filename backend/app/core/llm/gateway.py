@@ -620,10 +620,10 @@ class LLMGateway:
                     ),
                     total_tokens=total_tokens,
                     cached_tokens=(
-                        (
-                            getattr(usage_data, "prompt_tokens_details", None)
-                            or {}
-                        ).get("cached_tokens", 0)
+                        getattr(
+                            getattr(usage_data, "prompt_tokens_details", None),
+                            "cached_tokens", 0,
+                        ) or 0
                         if usage_data
                         else 0
                     ),
@@ -696,9 +696,10 @@ class LLMGateway:
                 completion_tokens=usage.completion_tokens if usage else 0,
                 total_tokens=total_tokens,
                 cached_tokens=(
-                    (getattr(usage, "prompt_tokens_details", None) or {}).get(
-                        "cached_tokens", 0
-                    )
+                    getattr(
+                        getattr(usage, "prompt_tokens_details", None),
+                        "cached_tokens", 0,
+                    ) or 0
                     if usage
                     else 0
                 ),
