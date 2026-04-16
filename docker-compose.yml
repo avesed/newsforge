@@ -19,10 +19,14 @@ services:
 
   redis:
     image: redis:7-alpine
+    # noeviction: auth denylist keys (jwt:refresh:revoked:*) are
+    # security-critical — under allkeys-lru they could be silently evicted,
+    # defeating logout and refresh-token reuse detection. When memory is
+    # full, writes fail; callers already tolerate cache-write failures.
     command: >
       redis-server
       --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
       --appendonly yes
     volumes:
       - redisdata:/data

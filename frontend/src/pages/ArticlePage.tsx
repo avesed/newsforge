@@ -23,7 +23,7 @@ import { timeAgo } from "@/lib/timeAgo";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { ArticlePageSkeleton } from "./ArticlePageSkeleton";
 import { useReadingStore } from "@/stores/readingStore";
-import { safeGetItem } from "@/lib/storage";
+import { sseFetch } from "@/api/sseFetch";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useSwipeBack } from "@/hooks/useSwipeBack";
 
@@ -142,16 +142,7 @@ export default function ArticlePage() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    const token = safeGetItem("access_token");
-    const headers: Record<string, string> = {
-      Accept: "text/event-stream",
-    };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-
-    fetch(`/api/v1/articles/${article.id}/stream/analysis`, {
-      headers,
+    sseFetch(`/api/v1/articles/${article.id}/stream/analysis`, {
       signal: controller.signal,
     })
       .then(async (response) => {

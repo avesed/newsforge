@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { getQueueStatus, type QueueStatus, type QueueArticle, type AgentProgress } from "@/api/admin";
+import { sseFetch } from "@/api/sseFetch";
 
 interface QueueEvent {
   type: string;
@@ -45,12 +46,7 @@ export function useQueueStream() {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      const token = localStorage.getItem("access_token");
-      const headers: Record<string, string> = { Accept: "text/event-stream" };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      fetch("/api/v1/admin/pipeline/queue/stream", {
-        headers,
+      sseFetch("/api/v1/admin/pipeline/queue/stream", {
         signal: controller.signal,
       })
         .then(async (response) => {

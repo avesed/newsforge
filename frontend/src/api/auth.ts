@@ -16,6 +16,6 @@ export async function getMe(): Promise<User> {
   return response.data;
 }
 
-export async function logout(): Promise<void> {
-  await apiClient.post("/auth/logout");
+export async function logout(refreshToken?: string | null): Promise<void> {
+  await apiClient.post("/auth/logout", refreshToken ? { refreshToken } : {});
 }

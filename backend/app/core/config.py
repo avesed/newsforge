@@ -29,8 +29,7 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # Security
-    jwt_secret_key: str = "change-me-in-production"
+    # Security — jwt_secret_key is bootstrapped by app.core.secrets, not read here
     jwt_access_token_expire_minutes: int = 30
     jwt_refresh_token_expire_days: int = 7
     cors_origins: str = "http://localhost:3000,http://localhost:5173"

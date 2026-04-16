@@ -1,7 +1,13 @@
 import { create } from "zustand";
 import type { User } from "@/types";
 import * as authApi from "@/api/auth";
-import { safeGetItem, safeSetItem, safeRemoveItem } from "@/lib/storage";
+import { safeGetItem } from "@/lib/storage";
+import {
+  awaitPendingRefresh,
+  clearTokens,
+  getAccessToken,
+  setTokens,
+} from "@/api/tokenRefresh";
 
 interface AuthState {
   user: User | null;
@@ -20,12 +26,12 @@ interface AuthActions {
 
 export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
   user: null,
-  token: safeGetItem("access_token"),
+  token: getAccessToken(),
   isLoading: true,
 
   login: async (email, password) => {
     const response = await authApi.login({ email, password });
-    safeSetItem("access_token", response.accessToken);
+    setTokens(response.accessToken, response.refreshToken);
     set({ token: response.accessToken });
     const user = await authApi.getMe();
     set({ user });
@@ -33,24 +39,28 @@ export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
 
   register: async (email, password, displayName) => {
     const response = await authApi.register({ email, password, displayName });
-    safeSetItem("access_token", response.accessToken);
+    setTokens(response.accessToken, response.refreshToken);
     set({ token: response.accessToken });
     const user = await authApi.getMe();
     set({ user });
   },
 
   logout: async () => {
+    // Avoid sending a pre-rotation refresh token if a silent refresh is
+    // in flight right now; wait for it to settle so we read the latest value.
+    await awaitPendingRefresh();
+    const refreshToken = safeGetItem("refresh_token");
     try {
-      await authApi.logout();
+      await authApi.logout(refreshToken);
     } catch {
-      // Ignore logout errors
+      // Ignore logout errors — we still want to clear local state.
     }
-    safeRemoveItem("access_token");
+    clearTokens();
     set({ user: null, token: null });
   },
 
   initAuth: async () => {
-    const token = safeGetItem("access_token");
+    const token = getAccessToken();
     if (!token) {
       set({ isLoading: false });
       return;
@@ -59,7 +69,7 @@ export const useAuthStore = create<AuthState & AuthActions>((set, get) => ({
       const user = await authApi.getMe();
       set({ user, token, isLoading: false });
     } catch {
-      safeRemoveItem("access_token");
+      clearTokens();
       set({ user: null, token: null, isLoading: false });
     }
   },

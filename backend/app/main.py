@@ -18,8 +18,10 @@ async def lifespan(app: FastAPI):
 
     # Startup
     from app.db.database import get_engine
+    from app.core.secrets import bootstrap_jwt_secret
 
     get_engine()  # Initialize engine
+    await bootstrap_jwt_secret()
 
     yield
 

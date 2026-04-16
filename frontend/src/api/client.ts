@@ -1,5 +1,12 @@
-import axios from "axios";
+import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import type { ApiError } from "@/types";
+import {
+  getAccessToken,
+  hardLogout,
+  refreshAccessToken,
+} from "./tokenRefresh";
+
+type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
 const apiClient = axios.create({
   baseURL: "/api/v1",
@@ -10,7 +17,7 @@ const apiClient = axios.create({
 });
 
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem("access_token");
+  const token = getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -19,15 +26,30 @@ apiClient.interceptors.request.use((config) => {
 
 apiClient.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem("access_token");
-      const currentPath = window.location.pathname;
-      if (currentPath !== "/login" && currentPath !== "/register") {
-        window.location.href = "/login";
-      }
+  async (error: AxiosError) => {
+    const original = error.config as RetryableConfig | undefined;
+    const status = error.response?.status;
+
+    if (status !== 401 || !original || original._retry) {
+      return Promise.reject(error);
     }
-    return Promise.reject(error);
+
+    // A 401 on /auth/refresh itself means refresh is dead — fall through to logout.
+    if (original.url?.endsWith("/auth/refresh")) {
+      hardLogout();
+      return Promise.reject(error);
+    }
+
+    original._retry = true;
+    try {
+      const newToken = await refreshAccessToken();
+      original.headers = original.headers ?? {};
+      original.headers.Authorization = `Bearer ${newToken}`;
+      return apiClient(original);
+    } catch {
+      hardLogout();
+      return Promise.reject(error);
+    }
   }
 );
 
