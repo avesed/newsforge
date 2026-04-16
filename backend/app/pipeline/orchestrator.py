@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+class ClassificationFailedError(RuntimeError):
+    """Raised when classification falls back to default 'other'/value=0.
+
+    Treated as a pipeline failure so the consumer triggers retry + circuit
+    breaker rather than silently storing a partially-processed article.
+    """
+
+
 async def poll_feeds() -> None:
     """Poll all enabled RSS feeds and enqueue new articles."""
     from sqlalchemy import select, update
@@ -500,15 +508,16 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             bool(classifier_full_text), classify_ms,
         )
 
-    if not checkpoint or "classification" not in (checkpoint or {}):
+    # Only checkpoint successful classifications — defaults should re-run on retry.
+    if not is_default and (not checkpoint or "classification" not in (checkpoint or {})):
         article_data["_checkpoint"]["classification"] = results["classification"]
 
     if is_default:
-        logger.warning(
-            "Classification returned defaults for article: %s — marking partial",
-            title[:80],
+        # Raise so consumer records a circuit-breaker failure and re-enqueues for retry.
+        # Keeping fetch/clean checkpoints means the retry won't re-fetch — only classify reruns.
+        raise ClassificationFailedError(
+            f"Classification returned defaults for {title[:80]}"
         )
-        results["partial"] = True
 
     # --- Phase 4: Dynamic agents (via unified agent queue) ---
     await _report_progress("agents")

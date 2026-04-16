@@ -529,7 +529,8 @@ class PipelineConsumer:
             try:
                 due = await q.get_due_retries(redis)
                 for article_data in due:
-                    await q.enqueue_article(redis, article_data)
+                    # Retries are lower priority than fresh polled news.
+                    await q.enqueue_article(redis, article_data, priority="low")
             except Exception:
                 logger.exception("Retry poller error")
             await asyncio.sleep(5)
