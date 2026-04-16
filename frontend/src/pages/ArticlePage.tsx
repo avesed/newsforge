@@ -314,8 +314,8 @@ export default function ArticlePage() {
   return (
     <div className="animate-page-enter">
     <div
-      className="fixed top-0 left-0 z-[60] h-0.5 bg-primary transition-[width] duration-150"
-      style={{ width: `${readProgress * 100}%` }}
+      className="fixed left-0 z-[60] h-0.5 bg-primary transition-[width] duration-150"
+      style={{ width: `${readProgress * 100}%`, top: "env(safe-area-inset-top, 0px)" }}
     />
     <article className={cn("mx-auto", widthClass)}>
       {isMobile ? (

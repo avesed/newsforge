@@ -66,7 +66,7 @@ export function Header() {
   };
 
   return (
-    <header className={cn("sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur transition-all duration-300", scrolled && "shadow-sm", headerHidden && "lg:translate-y-0 -translate-y-full")}>
+    <header className={cn("safe-area-top sticky top-0 z-50 border-b border-border bg-background/95 backdrop-blur transition-all duration-300", scrolled && "shadow-sm", headerHidden && "lg:translate-y-0 -translate-y-full")}>
       <div className="mx-auto max-w-6xl px-4">
         {/* Top bar */}
         <div className="flex h-12 lg:h-14 items-center justify-between">
