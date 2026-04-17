@@ -398,17 +398,18 @@ class LLMGateway:
             if profile_extras:
                 extra_body = {**extra_body, **profile_extras}
 
-            # Thinking config -> reasoning_effort (OpenAI standard param)
-            # More compatible than chat_template_kwargs across providers.
+            # Thinking config -> chat_template_kwargs
+            # Works across vLLM model families (Qwen3/3.5, DeepSeek, etc.)
+            # Do NOT use reasoning_effort — it breaks Qwen (empty content).
             thinking_enabled = profile.get("thinking_enabled")
             thinking_budget = profile.get("thinking_budget_tokens")
-            if thinking_enabled is False:
-                extra_body["reasoning_effort"] = "none"
-            elif thinking_budget is not None and thinking_enabled is not False:
-                extra_body["thinking"] = {
-                    "type": "enabled",
-                    "budget_tokens": thinking_budget,
-                }
+            if thinking_enabled is not None or thinking_budget is not None:
+                chat_tpl = dict(extra_body.get("chat_template_kwargs", {}))
+                if thinking_enabled is not None:
+                    chat_tpl["enable_thinking"] = thinking_enabled
+                if thinking_budget is not None and thinking_enabled is not False:
+                    chat_tpl["thinking_budget_tokens"] = thinking_budget
+                extra_body["chat_template_kwargs"] = chat_tpl
 
             logger.debug(
                 "Applied LLM profile for purpose=%s: overrides=%s extra_body_keys=%s",
