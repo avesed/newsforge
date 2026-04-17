@@ -19,6 +19,8 @@ import signal
 import time
 import uuid
 
+import sqlalchemy.exc
+
 from app.core.config import get_settings, load_pipeline_config
 from app.db.redis import get_redis
 from app.pipeline import agent_queue as aq
@@ -388,8 +390,26 @@ class PipelineConsumer:
                 .where(Article.id == article_id)
                 .values(**update_values)
             )
-            await session.execute(stmt)
-            await session.commit()
+            try:
+                await session.execute(stmt)
+                await session.commit()
+            except sqlalchemy.exc.IntegrityError:
+                # URL unique constraint violation — the resolved real URL
+                # already belongs to another article (dedup Redis key expired
+                # but the DB row persists). Mark this copy as duplicate.
+                await session.rollback()
+                logger.warning(
+                    "URL conflict on UPDATE for %s, marking as duplicate: %s",
+                    article_id[:8],
+                    update_values.get("url", "N/A"),
+                )
+                await session.execute(
+                    update(Article)
+                    .where(Article.id == article_id)
+                    .values(content_status="duplicate")
+                )
+                await session.commit()
+                return
 
         # Invalidate caches after successful article processing
         from app.services.cache_service import cache
