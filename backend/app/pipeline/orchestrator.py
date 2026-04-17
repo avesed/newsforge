@@ -420,6 +420,51 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             article_data["_checkpoint"]["content_full_text"] = content.full_text
             article_data["_checkpoint"]["content_language"] = content.language
 
+    # --- Dedup: check resolved URL before spending LLM tokens ---
+    final_url = results.get("content", {}).get("final_url") if results.get("content") else None
+    original_url = article_data.get("url")
+    if final_url and original_url and final_url != original_url:
+        from sqlalchemy import select as sql_select, update as sql_update
+        from app.models.article import Article
+
+        redis = await get_redis()
+        dedup = DedupEngine(redis)
+        seen, norm_real = await dedup.is_url_seen(final_url)
+        if not seen:
+            # Redis dedup key may have expired (TTL 24h) — fall back to DB
+            async with get_session_factory()() as chk_session:
+                existing = (await chk_session.execute(
+                    sql_select(Article.id).where(
+                        Article.url == norm_real,
+                        Article.id != article_id,
+                    )
+                )).scalar_one_or_none()
+            if existing:
+                seen = True
+        if seen:
+            logger.info(
+                "Resolved URL already exists, marking %s as duplicate early: %s",
+                article_id[:8], norm_real[:80],
+            )
+            await record_event(
+                article_id, "dedup", "duplicate",
+                metadata={"resolved_url": norm_real[:200]},
+            )
+            async with get_session_factory()() as dup_session:
+                await dup_session.execute(
+                    sql_update(Article)
+                    .where(Article.id == article_id)
+                    .values(content_status="duplicate")
+                )
+                await dup_session.commit()
+            results["duplicate"] = True
+            results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
+            return results
+        # Not a duplicate — record the resolved URL for consumer to UPDATE
+        results["_url_resolved"] = norm_real
+        await dedup.mark_url_seen(final_url)
+        await dedup.mark_url_seen(original_url)
+
     # --- Phase 2: Content cleaning ---
     await _report_progress("clean")
     cleaned_text = None

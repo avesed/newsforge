@@ -192,7 +192,7 @@ class PipelineConsumer:
                 except Exception:
                     logger.warning("Failed to update stage for article: %s", article_id)
 
-            await asyncio.wait_for(
+            is_duplicate = await asyncio.wait_for(
                 self._process_article(
                     redis, article_data, progress_callback=progress_callback
                 ),
@@ -207,10 +207,11 @@ class PipelineConsumer:
             self._processed += 1
             await q.increment_metrics(redis, "processed", 1)
 
-            # Accumulate for story batch
-            self._story_batch.append(article_id)
-            if len(self._story_batch) >= self._story_batch_size_target:
-                await self._submit_story_group(redis)
+            # Accumulate for story batch (skip duplicates)
+            if not is_duplicate:
+                self._story_batch.append(article_id)
+                if len(self._story_batch) >= self._story_batch_size_target:
+                    await self._submit_story_group(redis)
 
             if self._circuit_breaker:
                 await self._circuit_breaker.record_success()
@@ -256,7 +257,7 @@ class PipelineConsumer:
         finally:
             self._active_count -= 1
 
-    async def _process_article(self, redis, article_data: dict, *, progress_callback=None) -> None:
+    async def _process_article(self, redis, article_data: dict, *, progress_callback=None) -> bool:
         """Process a single article through the dynamic agent pipeline.
 
         Delegates to orchestrator.run_pipeline which handles:
@@ -275,42 +276,17 @@ class PipelineConsumer:
             article_id, article_data, progress_callback=progress_callback
         )
 
+        # Early exit if orchestrator already marked as duplicate
+        if pipeline_results.get("duplicate"):
+            return True
+
         # Store results to database
         classification = pipeline_results.get("classification", {})
         content_info = pipeline_results.get("content")
         agent_data = pipeline_results.get("agents", {})
 
-        # If the pipeline resolved a redirect (e.g. Google News → real URL),
-        # update Article.url and register the real URL in the dedup index so
-        # both the redirect and the real URL prevent future re-enqueue.
-        final_url = content_info.get("final_url") if content_info else None
-        original_url = article_data.get("url")
-        url_updated_to: str | None = None
-        if final_url and original_url and final_url != original_url:
-            from app.pipeline.dedup import DedupEngine
-
-            redis = await get_redis()
-            dedup = DedupEngine(redis)
-            seen, norm_real = await dedup.is_url_seen(final_url)
-            if seen:
-                logger.info(
-                    "Resolved URL already in dedup index, marking %s as duplicate: %s",
-                    article_id[:8], norm_real[:80],
-                )
-                from app.models.article import Article
-                from sqlalchemy import update as sql_update
-                async with get_session_factory()() as session:
-                    await session.execute(
-                        sql_update(Article)
-                        .where(Article.id == article_id)
-                        .values(content_status="duplicate")
-                    )
-                    await session.commit()
-                return
-            url_updated_to = norm_real
-            await dedup.mark_url_seen(final_url)
-            # Also re-affirm the redirect URL (original) so TTL refreshes
-            await dedup.mark_url_seen(original_url)
+        # Resolved URL from orchestrator dedup check (Google News → real URL)
+        url_updated_to: str | None = pipeline_results.get("_url_resolved")
 
         factory = get_session_factory()
         async with factory() as session:
@@ -393,23 +369,26 @@ class PipelineConsumer:
             try:
                 await session.execute(stmt)
                 await session.commit()
-            except sqlalchemy.exc.IntegrityError:
+            except sqlalchemy.exc.IntegrityError as exc:
+                await session.rollback()
+                if "articles_url_key" not in str(exc):
+                    raise  # Re-raise non-URL constraint violations
                 # URL unique constraint violation — the resolved real URL
                 # already belongs to another article (dedup Redis key expired
                 # but the DB row persists). Mark this copy as duplicate.
-                await session.rollback()
                 logger.warning(
                     "URL conflict on UPDATE for %s, marking as duplicate: %s",
                     article_id[:8],
                     update_values.get("url", "N/A"),
                 )
-                await session.execute(
-                    update(Article)
-                    .where(Article.id == article_id)
-                    .values(content_status="duplicate")
-                )
-                await session.commit()
-                return
+                async with get_session_factory()() as dup_session:
+                    await dup_session.execute(
+                        update(Article)
+                        .where(Article.id == article_id)
+                        .values(content_status="duplicate")
+                    )
+                    await dup_session.commit()
+                return True
 
         # Invalidate caches after successful article processing
         from app.services.cache_service import cache
@@ -443,6 +422,7 @@ class PipelineConsumer:
             len(agent_data),
             article_data.get("url", "")[:60],
         )
+        return False
 
     async def _handle_failure(self, redis, article_data: dict, error: str) -> None:
         """Handle article processing failure — retry or dead-letter."""
