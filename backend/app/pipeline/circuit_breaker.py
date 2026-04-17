@@ -40,6 +40,7 @@ class CircuitBreaker:
         self._state = CLOSED
         self._consecutive_failures = 0
         self._last_failure_time = 0.0
+        self._last_probe_time = 0.0
 
     async def load_state(self) -> None:
         """Load persisted state from Redis (call on startup)."""
@@ -48,6 +49,7 @@ class CircuitBreaker:
             self._state = data.get("state", CLOSED)
             self._consecutive_failures = int(data.get("consecutive_failures", 0))
             self._last_failure_time = float(data.get("last_failure_time", 0))
+            self._last_probe_time = float(data.get("last_probe_time", 0))
             logger.info(
                 "Circuit breaker loaded: state=%s failures=%d",
                 self._state, self._consecutive_failures,
@@ -60,6 +62,7 @@ class CircuitBreaker:
                 "state": self._state,
                 "consecutive_failures": str(self._consecutive_failures),
                 "last_failure_time": str(self._last_failure_time),
+                "last_probe_time": str(self._last_probe_time),
                 "updated_at": str(time.time()),
             })
         except Exception:
@@ -84,6 +87,7 @@ class CircuitBreaker:
         if self._state == OPEN:
             if time.time() - self._last_failure_time >= self._recovery_timeout:
                 self._state = HALF_OPEN
+                self._last_probe_time = time.time()
                 await self._persist_state()
                 logger.info("Circuit breaker HALF_OPEN (probing after %ds)", self._recovery_timeout)
                 await self._emit_event("circuit_breaker_half_open")
@@ -91,7 +95,14 @@ class CircuitBreaker:
             return False
 
         if self._state == HALF_OPEN:
-            # Only allow one probe at a time - block additional requests
+            # Allow a re-probe if recovery timeout elapsed since last probe —
+            # handles consumer restart while a probe was in-flight (state stuck
+            # as half_open in Redis with no active probe to resolve it).
+            if time.time() - self._last_probe_time >= self._recovery_timeout:
+                self._last_probe_time = time.time()
+                await self._persist_state()
+                logger.info("Circuit breaker HALF_OPEN re-probe (no active probe, recovery timeout elapsed)")
+                return True
             return False
 
         return True
