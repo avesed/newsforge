@@ -172,14 +172,34 @@ class AgentDefinition:
             response_format={"type": "json_object"},
         )
         response = await llm.chat(request, purpose=purpose)
+        content = response.content
+        if not content or not content.strip():
+            logger.warning(
+                "Agent %s: LLM returned empty content (purpose=%s, "
+                "tokens=%d, finish=%s). The model may have been filtered "
+                "or exhausted tokens during thinking.",
+                self.agent_id, purpose, response.usage.total_tokens,
+                response.finish_reason,
+            )
+            raise ValueError(
+                f"LLM returned empty content (purpose={purpose}, "
+                f"finish_reason={response.finish_reason})"
+            )
         try:
-            data = robust_json_loads(response.content)
+            data = robust_json_loads(content)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",
-                self.agent_id, purpose, e, response.content[:500],
+                self.agent_id, purpose, e, content[:500],
             )
             raise
+        if not isinstance(data, dict):
+            logger.warning(
+                "Agent %s: LLM returned %s instead of dict (purpose=%s), "
+                "wrapping as empty dict",
+                self.agent_id, type(data).__name__, purpose,
+            )
+            data = {}
         return data, response.usage.total_tokens
 
     async def _llm_text_call(
@@ -267,14 +287,34 @@ class AgentDefinition:
             response_format={"type": "json_object"},
         )
         response = await llm.chat(request, purpose=purpose)
+        content = response.content
+        if not content or not content.strip():
+            logger.warning(
+                "Agent %s: LLM returned empty content (purpose=%s, "
+                "tokens=%d, finish=%s). The model may have been filtered "
+                "or exhausted tokens during thinking.",
+                self.agent_id, purpose, response.usage.total_tokens,
+                response.finish_reason,
+            )
+            raise ValueError(
+                f"LLM returned empty content (purpose={purpose}, "
+                f"finish_reason={response.finish_reason})"
+            )
         try:
-            data = robust_json_loads(response.content)
+            data = robust_json_loads(content)
         except (json.JSONDecodeError, ValueError) as e:
             logger.warning(
                 "Agent %s: JSON parse failed (purpose=%s): %s\nRaw response: %s",
-                self.agent_id, purpose, e, response.content[:500],
+                self.agent_id, purpose, e, content[:500],
             )
             raise
+        if not isinstance(data, dict):
+            logger.warning(
+                "Agent %s: LLM returned %s instead of dict (purpose=%s), "
+                "wrapping as empty dict",
+                self.agent_id, type(data).__name__, purpose,
+            )
+            data = {}
         return data, response.usage.total_tokens
 
     async def _cached_text_call(

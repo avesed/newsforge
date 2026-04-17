@@ -398,17 +398,17 @@ class LLMGateway:
             if profile_extras:
                 extra_body = {**extra_body, **profile_extras}
 
-            # Thinking config -> chat_template_kwargs
+            # Thinking config -> reasoning_effort (OpenAI standard param)
+            # More compatible than chat_template_kwargs across providers.
             thinking_enabled = profile.get("thinking_enabled")
             thinking_budget = profile.get("thinking_budget_tokens")
-            if thinking_enabled is not None or thinking_budget is not None:
-                chat_tpl = dict(extra_body.get("chat_template_kwargs", {}))
-                if thinking_enabled is not None:
-                    chat_tpl["enable_thinking"] = thinking_enabled
-                # Only send thinking_budget_tokens when thinking is enabled
-                if thinking_budget is not None and thinking_enabled is not False:
-                    chat_tpl["thinking_budget_tokens"] = thinking_budget
-                extra_body["chat_template_kwargs"] = chat_tpl
+            if thinking_enabled is False:
+                extra_body["reasoning_effort"] = "none"
+            elif thinking_budget is not None and thinking_enabled is not False:
+                extra_body["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": thinking_budget,
+                }
 
             logger.debug(
                 "Applied LLM profile for purpose=%s: overrides=%s extra_body_keys=%s",
@@ -588,14 +588,16 @@ class LLMGateway:
             content = "".join(content_parts)
             reasoning = "".join(reasoning_parts)
 
-            # Handle empty content with reasoning (same as non-streaming)
+            # Log empty content — do NOT try to extract from reasoning,
+            # as thinking content is unreliable for structured output.
             if not content and reasoning:
                 logger.warning(
                     "LLM streaming response content empty but reasoning present "
-                    "(model=%s, purpose=%s, finish=%s, reasoning_len=%d)",
+                    "(model=%s, purpose=%s, finish=%s, reasoning_len=%d). "
+                    "Likely enable_thinking is not working — check vLLM "
+                    "chat template or provider config.",
                     resp_model, purpose, finish_reason, len(reasoning),
                 )
-                content = _extract_json_from_reasoning(reasoning)
             elif not content:
                 logger.warning(
                     "LLM streaming response content empty "
@@ -643,7 +645,8 @@ class LLMGateway:
         msg = choice.message
         usage = response.usage
 
-        # Extract content — handle reasoning models (Qwen3, DeepSeek-R1)
+        # Extract content — do NOT fall back to reasoning/thinking content,
+        # as it is unreliable for structured output.
         content = msg.content or ""
         if not content:
             reasoning = getattr(msg, "reasoning", None) or getattr(
@@ -653,13 +656,10 @@ class LLMGateway:
                 logger.warning(
                     "LLM response content is empty but reasoning is present "
                     "(model=%s, purpose=%s, finish_reason=%s, reasoning_len=%d). "
-                    "The model may have exhausted tokens during thinking. "
-                    "Consider increasing max_tokens or adding "
-                    '{"chat_template_kwargs": {"enable_thinking": false}} '
-                    "to the provider's extra_params.",
+                    "Likely enable_thinking is not working — check vLLM "
+                    "chat template or provider config.",
                     model, purpose, choice.finish_reason, len(reasoning),
                 )
-                content = _extract_json_from_reasoning(reasoning)
             else:
                 logger.warning(
                     "LLM response content is empty (model=%s, purpose=%s, "
@@ -831,32 +831,6 @@ class LLMGateway:
             return True, f"OK (model: {response.model})"
         except Exception as e:
             return False, str(e)[:200]
-
-
-def _extract_json_from_reasoning(reasoning: str) -> str:
-    """Try to extract a JSON object/array from reasoning text.
-
-    Reasoning models sometimes include their intended JSON output within the
-    thinking trace. We look for the last complete JSON block.
-    Returns the extracted JSON string, or empty string if none found.
-    """
-    import re
-
-    # Look for ```json ... ``` blocks first
-    json_blocks = re.findall(r"```json\s*([\s\S]*?)```", reasoning)
-    if json_blocks:
-        return json_blocks[-1].strip()
-
-    # Look for last { ... } or [ ... ] block that parses as JSON
-    for match in reversed(list(re.finditer(r"(\{[\s\S]*\}|\[[\s\S]*\])", reasoning))):
-        candidate = match.group(0)
-        try:
-            json.loads(candidate)
-            return candidate
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    return ""
 
 
 def get_llm_gateway() -> LLMGateway:
