@@ -45,6 +45,28 @@ def detect_language(text: str) -> str | None:
         logger.debug("Language detection failed for text: %.50s...", text)
     return None
 
+# --- Live-update URL detection ---
+
+_LIVE_UPDATE_PATTERNS = (
+    "/live-updates/",
+    "/live-update/",
+    "/live/",
+    "/liveblog/",
+    "stock-market-today-live",
+    "/breaking-news-live",
+)
+
+
+def is_live_update_url(url: str) -> bool:
+    """Detect URLs that are continuously-updated live pages.
+
+    These pages change content over time while keeping the same URL,
+    so resolved-URL dedup should allow re-processing.
+    """
+    lower = url.lower()
+    return any(pat in lower for pat in _LIVE_UPDATE_PATTERNS)
+
+
 # URL params to strip for normalization
 _TRACKING_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",

@@ -426,21 +426,59 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if final_url and original_url and final_url != original_url:
         from sqlalchemy import select as sql_select, update as sql_update
         from app.models.article import Article
+        from app.pipeline.dedup import is_live_update_url
 
         redis = await get_redis()
         dedup = DedupEngine(redis)
         seen, norm_real = await dedup.is_url_seen(final_url)
+        existing_id = None
         if not seen:
             # Redis dedup key may have expired (TTL 24h) — fall back to DB
             async with get_session_factory()() as chk_session:
-                existing = (await chk_session.execute(
+                existing_id = (await chk_session.execute(
                     sql_select(Article.id).where(
                         Article.url == norm_real,
                         Article.id != article_id,
                     )
                 )).scalar_one_or_none()
-            if existing:
+            if existing_id:
                 seen = True
+
+        if seen and is_live_update_url(norm_real):
+            # Live-update pages change content while keeping the same URL.
+            # Supersede the old article so the fresh version gets processed.
+            if not existing_id:
+                async with get_session_factory()() as chk_session:
+                    existing_id = (await chk_session.execute(
+                        sql_select(Article.id).where(
+                            Article.url == norm_real,
+                            Article.id != article_id,
+                        )
+                    )).scalar_one_or_none()
+            if existing_id:
+                async with get_session_factory()() as sup_session:
+                    # Append suffix to old URL to free the unique constraint
+                    # for the new article that will claim the resolved URL.
+                    await sup_session.execute(
+                        sql_update(Article)
+                        .where(Article.id == existing_id)
+                        .values(
+                            content_status="superseded",
+                            url=norm_real + f"#superseded-{str(existing_id)[:8]}",
+                        )
+                    )
+                    await sup_session.commit()
+                logger.info(
+                    "Live-update URL: superseded old article %s, re-processing %s: %s",
+                    str(existing_id)[:8], article_id[:8], norm_real[:80],
+                )
+            await record_event(
+                article_id, "dedup", "live_update_refresh",
+                metadata={"resolved_url": norm_real[:200], "superseded": str(existing_id) if existing_id else None},
+            )
+            # Let this article proceed — it will get the resolved URL below
+            seen = False
+
         if seen:
             logger.info(
                 "Resolved URL already exists, marking %s as duplicate early: %s",
