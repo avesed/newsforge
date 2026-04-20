@@ -334,7 +334,8 @@ export default function ArticlePage() {
             <button
               onClick={goBack}
               aria-label={t("common.back")}
-              className="absolute left-3 top-3 safe-area-top flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+              className="absolute left-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+              style={{ top: "calc(0.25rem + env(safe-area-inset-top, 0px))" }}
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -346,7 +347,8 @@ export default function ArticlePage() {
                 target="_blank"
                 rel="noopener noreferrer"
                 aria-label={t("article.viewOriginal", "View Original")}
-                className="absolute right-3 top-3 safe-area-top flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+                className="absolute right-3 flex h-9 w-9 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur-sm transition-colors hover:bg-black/50"
+                style={{ top: "calc(0.25rem + env(safe-area-inset-top, 0px))" }}
               >
                 <ExternalLink className="h-4 w-4" />
               </a>
