@@ -162,12 +162,27 @@
   background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.35) 45%, transparent 100%);
 }
 
+/* ── iOS standalone (PWA) safe-area ── */
+@media (display-mode: standalone) {
+  html {
+    background-color: hsl(var(--background));
+  }
+}
+
 /* Safe area utilities */
 .safe-area-top {
+  padding-top: constant(safe-area-inset-top);  /* iOS 11.0–11.1 */
   padding-top: env(safe-area-inset-top, 0px);
 }
 
+@media (display-mode: standalone) {
+  .safe-area-top {
+    padding-top: max(env(safe-area-inset-top, 20px), 20px);
+  }
+}
+
 .safe-area-bottom {
+  padding-bottom: constant(safe-area-inset-bottom);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
