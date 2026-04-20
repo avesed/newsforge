@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useMemo } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Loader2, Newspaper } from "lucide-react";
 import { getArticles } from "@/api/articles";
@@ -42,8 +42,11 @@ export function ArticleList({ category }: ArticleListProps) {
   const firstPageSize = data?.pages[0]?.articles.length ?? 0;
   const animateUpTo = useMemo(() => firstPageSize, [firstPageSize]);
 
+  const queryClient = useQueryClient();
   const { containerRef, indicatorRef, isRefreshing } = usePullToRefresh({
-    onRefresh: async () => { await refetch(); },
+    onRefresh: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["articles", category] });
+    },
   });
 
   const handleObserver = useCallback(
@@ -102,7 +105,7 @@ export function ArticleList({ category }: ArticleListProps) {
       <div
         ref={indicatorRef}
         className="flex items-center justify-center overflow-hidden"
-        style={{ height: 0, opacity: 0, transition: "height 200ms ease-out, opacity 150ms ease-out" }}
+        style={{ height: 0, opacity: 0 }}
       >
         <Loader2
           data-pull-icon

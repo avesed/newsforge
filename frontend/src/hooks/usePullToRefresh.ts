@@ -29,9 +29,13 @@ export function usePullToRefresh({
   const directionLockedRef = useRef(false);
 
   // Direct DOM update — no React re-render per frame
-  const updateIndicator = useCallback((distance: number) => {
+  const updateIndicator = useCallback((distance: number, animate = false) => {
     const el = indicatorRef.current;
     if (!el) return;
+    // Disable transition during active pulling; enable for snap/collapse
+    el.style.transition = animate
+      ? "height 250ms ease-out, opacity 200ms ease-out"
+      : "none";
     el.style.height = `${distance}px`;
     el.style.opacity = distance > 0 ? "1" : "0";
     // Rotate the spinner icon inside
@@ -42,9 +46,20 @@ export function usePullToRefresh({
     }
   }, [threshold]);
 
+  // Clear inline styles on icon so CSS animate-spin can take over
+  const releaseIconStyle = useCallback(() => {
+    const el = indicatorRef.current;
+    if (!el) return;
+    const icon = el.querySelector("[data-pull-icon]") as HTMLElement | null;
+    if (icon) {
+      icon.style.transform = "";
+      icon.style.opacity = "";
+    }
+  }, []);
+
   const handleTouchStart = useCallback((e: TouchEvent) => {
     const touch = e.touches[0];
-    if (window.scrollY === 0 && !refreshingRef.current && touch) {
+    if (window.scrollY <= 1 && !refreshingRef.current && touch) {
       startYRef.current = touch.clientY;
       startXRef.current = touch.clientX;
       pullingRef.current = true;
@@ -69,7 +84,7 @@ export function usePullToRefresh({
       }
     }
 
-    if (deltaY > 0 && window.scrollY === 0) {
+    if (deltaY > 0 && window.scrollY <= 1) {
       e.preventDefault();
       const distance = Math.min(deltaY * 0.4, maxPull);
       pullDistanceRef.current = distance;
@@ -88,22 +103,24 @@ export function usePullToRefresh({
     if (pullDistanceRef.current >= threshold) {
       refreshingRef.current = true;
       setIsRefreshing(true);
-      // Snap indicator to loading position
+      // Snap indicator to loading position (animated)
       const snapHeight = threshold * 0.6;
-      updateIndicator(snapHeight);
+      updateIndicator(snapHeight, true);
+      releaseIconStyle();
       try {
-        await onRefresh();
+        const minDisplay = new Promise((r) => setTimeout(r, 1000));
+        await Promise.all([onRefresh(), minDisplay]);
       } finally {
         refreshingRef.current = false;
         setIsRefreshing(false);
         pullDistanceRef.current = 0;
-        updateIndicator(0);
+        updateIndicator(0, true);
       }
     } else {
       pullDistanceRef.current = 0;
-      updateIndicator(0);
+      updateIndicator(0, true);
     }
-  }, [threshold, onRefresh, updateIndicator]);
+  }, [threshold, onRefresh, updateIndicator, releaseIconStyle]);
 
   const handleTouchCancel = useCallback(() => {
     pullingRef.current = false;
