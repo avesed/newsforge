@@ -162,10 +162,15 @@
   background: linear-gradient(to top, rgba(0, 0, 0, 0.85) 0%, rgba(0, 0, 0, 0.35) 45%, transparent 100%);
 }
 
-/* ── iOS standalone (PWA) safe-area ── */
+/* ── iOS standalone (PWA) ── */
 @media (display-mode: standalone) {
   html {
     background-color: hsl(var(--background));
+  }
+
+  /* Disable iOS native pull-to-refresh so custom handler works */
+  body {
+    overscroll-behavior-y: none;
   }
 }
 
