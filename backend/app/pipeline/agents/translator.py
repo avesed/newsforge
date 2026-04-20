@@ -46,6 +46,13 @@ class TranslatorAgent(AgentDefinition):
    - 保留原文的段落结构、关键数据和引用
    - 保留Markdown格式
 
+翻译时跳过（不要翻译也不要包含在输出中）：
+- 视频/音频播放器控件文字（如"Play", "Watch", "Next video", 时间戳等）
+- 网站logo、图标、广告图、占位符图片引用
+- 导航菜单、页眉页脚残留文字
+
+图片规则：仅保留正文配图的原始URL，不要编造、替换或翻译图片URL。
+
 输出严格JSON格式：
 {"title_zh": "中文标题", "full_text_zh": "中文正文"}"""
 
