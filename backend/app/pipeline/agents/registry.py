@@ -84,6 +84,7 @@ class AgentRegistry:
         categories: list[str],
         value_score: int,
         has_market_impact: bool,
+        source_categories: list[str] | None = None,
     ) -> dict[int, list[AgentDefinition]]:
         """Resolve which agents to run based on article classification.
 
@@ -107,54 +108,65 @@ class AgentRegistry:
 
         if effective_score < medium_threshold:
             # Lightweight: basic entity/tag extraction only
-            return self._collect_agents(lightweight_agent_ids)
-
-        if effective_score < high_threshold:
+            agent_ids = list(lightweight_agent_ids)
+        elif effective_score < high_threshold:
             # Medium value: limited agents
-            medium_agent_ids = self._routing_rules.get("medium_value_agents", [])
-            return self._collect_agents(medium_agent_ids)
+            agent_ids = list(self._routing_rules.get("medium_value_agents", []))
+        else:
+            # High value: full agent resolution
+            agent_ids = list(self._triggers.get("always", []))
 
-        # High value: full agent resolution
-        agent_ids: set[str] = set()
+            # Category-triggered agents
+            cat_triggers = self._triggers.get("category_triggered", {})
+            for cat in categories:
+                if cat in cat_triggers:
+                    agent_ids.extend(cat_triggers[cat])
 
-        # Always-run agents
-        always_agents = self._triggers.get("always", [])
-        agent_ids.update(always_agents)
+            # Condition-triggered agents
+            cond_triggers = self._triggers.get("condition_triggered", [])
+            for trigger in cond_triggers:
+                condition = trigger.get("condition", "")
+                agents = trigger.get("agents", [])
+                if self._evaluate_condition(condition, categories, has_market_impact, value_score):
+                    agent_ids.extend(agents)
 
-        # Category-triggered agents
-        cat_triggers = self._triggers.get("category_triggered", {})
-        for cat in categories:
-            if cat in cat_triggers:
-                agent_ids.update(cat_triggers[cat])
+        # --- finance_analyzer: conditional trigger ---
+        # Runs when ANY of: (1) article category matches, (2) has_market_impact,
+        # (3) source/feed pre-tagged as finance
+        if "finance_analyzer" not in agent_ids and "finance_analyzer" in self._agents:
+            fa_cats = set(self._triggers.get("finance_analyzer_categories", []))
+            source_cats = set(source_categories or [])
+            should_run = (
+                has_market_impact
+                or bool(fa_cats & set(categories))
+                or "finance" in source_cats
+            )
+            if should_run:
+                agent_ids.append("finance_analyzer")
 
-        # Condition-triggered agents
-        cond_triggers = self._triggers.get("condition_triggered", [])
-        for trigger in cond_triggers:
-            condition = trigger.get("condition", "")
-            agents = trigger.get("agents", [])
-            if self._evaluate_condition(condition, categories, has_market_impact, value_score):
-                agent_ids.update(agents)
-
-        return self._collect_agents(agent_ids)
+        return self._collect_agents(set(agent_ids))
 
     def resolve_agents_tiered(
         self,
         categories: list[str],
         value_score: int,
         has_market_impact: bool,
+        source_categories: list[str] | None = None,
     ) -> tuple[list[str], list[str]]:
         """Resolve agents split into P1 (high priority) and P2 (low priority).
 
-        P1 agents are user-facing (summarizer, translator, entity, tagger).
-        P2 agents are analytical (sentiment, scorer, embedder, etc.) and can
+        P1 agents are user-facing (summarizer, translator, entity).
+        P2 agents are analytical (finance_analyzer, embedder) and can
         be disabled via ``agent_priority.p2_enabled: false`` for standalone
-        deployments.
+        deployments (except embedder, which always runs).
 
         Returns ``(p1_agent_ids, p2_agent_ids)`` preserving execution order.
         If priority config is absent, all agents are returned as P1 (backward
         compatible).
         """
-        all_phases = self.resolve_agents(categories, value_score, has_market_impact)
+        all_phases = self.resolve_agents(
+            categories, value_score, has_market_impact, source_categories
+        )
         if not all_phases:
             return [], []
 

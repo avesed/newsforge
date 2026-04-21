@@ -626,8 +626,28 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     # --- Phase 4: Dynamic agents (tiered: P1 blocking + P2 fire-and-forget) ---
     await _report_progress("agents")
     registry = get_agent_registry()
+
+    # Look up source/feed categories for finance_analyzer trigger logic
+    source_categories: list[str] = []
+    try:
+        from app.db.database import get_session_factory as _gsf
+        _factory = _gsf()
+        async with _factory() as _sess:
+            from sqlalchemy import text as _text
+            _row = await _sess.execute(_text(
+                "SELECT c.slug FROM articles a "
+                "JOIN feeds f ON a.feed_id = f.id "
+                "JOIN categories c ON f.category_id = c.id "
+                "WHERE a.id = :aid"
+            ), {"aid": article_id})
+            _cat = _row.scalar_one_or_none()
+            if _cat:
+                source_categories = [_cat]
+    except Exception:
+        pass  # Feed may not have a category set — that's fine
+
     p1_agent_ids, p2_agent_ids = registry.resolve_agents_tiered(
-        categories, value_score, has_market_impact
+        categories, value_score, has_market_impact, source_categories
     )
 
     all_resolved_ids = p1_agent_ids + p2_agent_ids

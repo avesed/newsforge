@@ -22,7 +22,6 @@ agent_triggers:
   # Always run for high-value articles (unified agents handle all categories)
   always:
     - summarizer
-    - finance_analyzer
     - entity
     - translator
     - embedder
@@ -42,6 +41,16 @@ agent_triggers:
 
   # Condition-based triggers (evaluated at runtime)
   condition_triggered: []
+
+  # finance_analyzer trigger conditions (any one met → trigger):
+  # 1. Article classified as one of these categories
+  # 2. has_market_impact = true
+  # 3. Source/feed pre-tagged as finance
+  finance_analyzer_categories:
+    - finance
+    - tech
+    - politics
+    - world
 
 # Agent priority tiers — split agents into P1 (user-facing, fast) and P2 (analytical, async)
 # P1 agents complete before article is shown to user; P2 runs fire-and-forget afterward.
@@ -67,7 +76,6 @@ routing_rules:
     - embedder
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
-    - finance_analyzer
     - entity
     - translator
     - embedder
