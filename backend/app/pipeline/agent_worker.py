@@ -226,6 +226,7 @@ class AgentWorker:
             has_market_impact=context_data.get("has_market_impact", False),
             value_score=context_data.get("value_score", 0),
             url=context_data.get("url"),
+            source_name=context_data.get("source_name"),
         )
 
         # Restore prior results (from checkpoint) into context

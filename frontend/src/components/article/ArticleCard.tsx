@@ -2,7 +2,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { BookOpen, Check, CircleCheck, Clock, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
-import { cn } from "@/lib/utils";
+import { cn, extractTitleSource } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import type { Article } from "@/types";
 
@@ -17,6 +17,8 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
   const { t, i18n } = useTranslation();
   const locale = i18n.language === "zh" ? "zh" : "en";
   const navigate = useNavigate();
+  const extracted = extractTitleSource(article.title);
+  const displaySource = extracted.source || article.sourceName || "Unknown";
 
   /* ── Hero variant ─────────────────────────────────────────── */
   if (variant === "hero" && article.imageUrl) {
@@ -54,7 +56,7 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
               {locale === "zh" && article.titleZh ? article.titleZh : article.title}
             </h3>
             <div className="mt-1.5 flex items-center gap-2 text-xs text-white/70">
-              <span className="font-medium">{article.sourceName || "Unknown"}</span>
+              <span className="font-medium">{displaySource}</span>
               <span>·</span>
               <span className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />
@@ -91,7 +93,7 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
       >
         {/* Meta row */}
         <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1.5">
-          <span className="font-medium">{article.sourceName || "Unknown"}</span>
+          <span className="font-medium">{displaySource}</span>
           <span className="flex items-center gap-1">
             <Clock className="h-3 w-3" />
             {timeAgo(article.publishedAt, locale)}

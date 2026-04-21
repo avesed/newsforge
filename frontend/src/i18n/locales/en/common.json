@@ -41,6 +41,8 @@
     "fullText": "Full Text",
     "fullTextEmpty": "Full text not available",
     "viewOriginal": "View Original",
+    "showOriginal": "Show Original",
+    "showTranslation": "Show Translation",
     "aiAnalyzing": "AI analyzing...",
     "generating": "Generating...",
     "readTime": "{{min}} min read",

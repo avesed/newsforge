@@ -18,7 +18,7 @@ import { getArticle, getRelatedArticles } from "@/api/articles";
 import { ArticleCard } from "@/components/article/ArticleCard";
 import { MarkdownRenderer } from "@/components/article/MarkdownRenderer";
 import { useReadHistory } from "@/hooks/useReadHistory";
-import { cn } from "@/lib/utils";
+import { cn, extractTitleSource } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { ArticlePageSkeleton } from "./ArticlePageSkeleton";
@@ -48,6 +48,7 @@ export default function ArticlePage() {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === "zh" ? "zh" : "en";
   const [agentsExpanded, setAgentsExpanded] = useState(false);
+  const [showOriginalText, setShowOriginalText] = useState(false);
   const [activeTab, setActiveTab] = useState("detailed");
   const [tabDirection, setTabDirection] = useState<"left" | "right">("right");
   const [readProgress, setReadProgress] = useState(0);
@@ -106,6 +107,9 @@ export default function ArticlePage() {
     enabled: !!article?.id,
     staleTime: 10 * 60 * 1000,
   });
+
+  const extracted = article ? extractTitleSource(article.title) : null;
+  const displaySource = extracted?.source || article?.sourceName || "";
 
   useEffect(() => {
     if (article?.id) {
@@ -360,7 +364,7 @@ export default function ArticlePage() {
                 {locale === "zh" && article.titleZh ? article.titleZh : article.title}
               </h1>
               <div className="mt-2 flex items-center gap-2 text-xs text-white/80">
-                <span className="font-medium">{article.sourceName}</span>
+                <span className="font-medium">{displaySource}</span>
                 <span>·</span>
                 <span>{timeAgo(article.publishedAt, locale)}</span>
                 {readingTime != null && (
@@ -455,7 +459,7 @@ export default function ArticlePage() {
           {/* Desktop: Meta row */}
           <div className="flex items-center gap-3 text-sm text-muted-foreground mb-4">
             <span className="font-medium text-foreground/80">
-              {article.sourceName}
+              {displaySource}
             </span>
             <span className="flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />
@@ -598,9 +602,25 @@ export default function ArticlePage() {
           value="fulltext"
           className={cn("prose dark:prose-invert max-w-none article-body", proseClass, spacingClass)}
         >
-          <div key={activeTab} className={cn(tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left", "article-fulltext")}>
+          {/* Show original toggle — only when translated version exists */}
+          {locale === "zh" && article.fullTextZh && article.fullText && (
+            <div className="not-prose mb-4 flex justify-end">
+              <button
+                onClick={() => setShowOriginalText((v) => !v)}
+                className="flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+              >
+                <ExternalLink className="h-3 w-3" />
+                {showOriginalText ? t("article.showTranslation", "查看译文") : t("article.showOriginal", "查看原文")}
+              </button>
+            </div>
+          )}
+          <div key={`${activeTab}-${showOriginalText}`} className={cn(tabDirection === "right" ? "animate-slide-in-right" : "animate-slide-in-left", "article-fulltext")}>
             {article.fullText ? (
-              <MarkdownRenderer content={locale === "zh" && article.fullTextZh ? article.fullTextZh : article.fullText} />
+              <MarkdownRenderer content={
+                showOriginalText
+                  ? article.fullText
+                  : (locale === "zh" && article.fullTextZh ? article.fullTextZh : article.fullText)
+              } />
             ) : (
               <p className="text-muted-foreground py-8 text-center text-sm">
                 {t("article.fullTextEmpty", "Full text not available")}

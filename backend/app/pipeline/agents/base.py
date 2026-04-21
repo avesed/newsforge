@@ -74,6 +74,7 @@ class AgentContext:
     has_market_impact: bool
     value_score: int = 0
     url: str | None = None
+    source_name: str | None = None
     # Results from other agents (filled as pipeline progresses)
     agent_results: dict[str, AgentResult] = field(default_factory=dict)
 

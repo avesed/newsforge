@@ -682,6 +682,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
         "has_market_impact": has_market_impact,
         "value_score": value_score,
         "url": url,
+        "source_name": article_data.get("source_name"),
     }
 
     # Submit agent group to unified queue
