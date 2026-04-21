@@ -22,23 +22,16 @@ agent_triggers:
   # Always run for high-value articles (unified agents handle all categories)
   always:
     - summarizer
-    - sentiment
+    - finance_analyzer
     - entity
-    - tagger
     - translator
 
-  # Category-specific agents (only domain-specific + scorer)
+  # Category-specific agents (none — finance_analyzer handles all categories)
   category_triggered:
-    finance:
-      - impact_scorer
-    tech:
-      - tech_trend
-      - impact_scorer
-    politics:
-      - politics_impact
-      - impact_scorer
-    world:
-      - impact_scorer
+    finance: []
+    tech: []
+    politics: []
+    world: []
     entertainment: []
     gaming: []
     sports: []
@@ -60,9 +53,8 @@ agent_priority:
     - summarizer
     - translator
     - entity
-    - tagger
-  # All other resolved agents are implicitly P2 (sentiment, impact_scorer,
-  # tech_trend, politics_impact, embedder, deep_reporter)
+  # All other resolved agents are implicitly P2 (finance_analyzer,
+  # tech_trend, politics_impact, embedder)
 
 # Routing rules — value-based processing tiers
 routing_rules:
@@ -73,13 +65,11 @@ routing_rules:
   lightweight_agents:            # Agents for lightweight articles (score 15-29)
     - summarizer
     - entity
-    - tagger
     - translator
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
-    - sentiment
+    - finance_analyzer
     - entity
-    - tagger
     - translator
 
 # Per-category pipeline depth (legacy — still used for content fetch decisions)
@@ -90,7 +80,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: true
     enable_entity_extraction: true
-    entity_types: [stock, index, macro, person, org]
+    entity_types: [person, location, event]
     enable_sentiment: true
     enable_embedding: true
 
@@ -100,7 +90,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: true
     enable_entity_extraction: true
-    entity_types: [person, org, product]
+    entity_types: [person, location, event]
     enable_sentiment: true
     enable_embedding: true
 
@@ -109,7 +99,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: false
     enable_entity_extraction: true
-    entity_types: [person, org, location]
+    entity_types: [person, location, event]
     enable_sentiment: true
     enable_embedding: false
 
@@ -118,7 +108,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: false
     enable_entity_extraction: true
-    entity_types: [person, org, product]
+    entity_types: [person, location, event]
     enable_sentiment: true
     enable_embedding: false
 
@@ -127,7 +117,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: false
     enable_entity_extraction: true
-    entity_types: [product, org]
+    entity_types: [person, event]
     enable_sentiment: true
     enable_embedding: false
 
@@ -136,7 +126,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: false
     enable_entity_extraction: true
-    entity_types: [person, org]
+    entity_types: [person, event]
     enable_sentiment: true
     enable_embedding: false
 
@@ -145,7 +135,7 @@ categories:
     enable_content_fetch: true
     enable_deep_analysis: false
     enable_entity_extraction: true
-    entity_types: [person, org, location]
+    entity_types: [person, location, event]
     enable_sentiment: true
     enable_embedding: false
 

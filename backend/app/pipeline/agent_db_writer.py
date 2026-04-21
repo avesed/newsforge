@@ -43,6 +43,15 @@ AGENT_COLUMN_MAP: dict[str, Any] = {
         }.items()
         if v is not None
     },
+    "finance_analyzer": lambda d: {
+        k: v
+        for k, v in {
+            "sentiment_score": d.get("sentiment_score"),
+            "sentiment_label": d.get("sentiment_label"),
+            "ai_analysis": d.get("analysis_report"),
+        }.items()
+        if v is not None
+    },
 }
 
 
@@ -89,16 +98,15 @@ async def write_agent_result(article_id: str, agent_id: str, serialized: dict) -
 
 
 async def finalize_merged_fields(
-    article_id: str, agent_data: dict, session
+    article_id: str, agent_data: dict, session,
+    classification: dict | None = None,
 ) -> dict:
     """Extract and merge entity + finance_metadata fields from all agents.
 
-    Takes the full agent_data dict and an existing DB session.
+    Takes the full agent_data dict, an existing DB session, and optionally
+    the classification result dict (which now contains industry_tags and
+    event_tags after the tagger-merger).
     Returns a dict of column values to merge into the consumer's update_values.
-
-    This consolidates logic previously inline in consumer._process_article
-    (entities from entity/entity_* agents, finance_metadata from sentiment +
-    tagger + entity agents).
     """
     from app.models.article import Article
 
@@ -143,31 +151,30 @@ async def finalize_merged_fields(
         else {}
     )
 
-    sentiment_result = agent_data.get("sentiment", {})
-    if sentiment_result.get("success"):
-        sd = sentiment_result.get("data", {})
-        if sd.get("finance_sentiment"):
-            finance_meta["sentiment_tag"] = sd["finance_sentiment"]
-        if sd.get("investment_summary"):
-            finance_meta["investment_summary"] = sd["investment_summary"]
+    # Finance analyzer (merged sentiment + deep_reporter) or legacy sentiment agent
+    fa_result = agent_data.get("finance_analyzer") or agent_data.get("sentiment") or {}
+    if fa_result.get("success"):
+        fd = fa_result.get("data", {})
+        if fd.get("finance_sentiment"):
+            finance_meta["sentiment_tag"] = fd["finance_sentiment"]
+        if fd.get("investment_summary"):
+            finance_meta["investment_summary"] = fd["investment_summary"]
+        if fd.get("financial_entities"):
+            finance_meta["financial_entities"] = fd["financial_entities"]
+        if fd.get("sectors"):
+            finance_meta["sectors"] = fd["sectors"]
+        if fd.get("policy_analysis"):
+            finance_meta["policy_analysis"] = fd["policy_analysis"]
 
-    tagger_result = agent_data.get("tagger", {})
-    if tagger_result.get("success"):
-        td = tagger_result.get("data", {})
-        if td.get("industry_tags"):
-            finance_meta["industry_tags"] = td["industry_tags"]
-        if td.get("event_tags"):
-            finance_meta["event_tags"] = td["event_tags"]
+    # industry_tags and event_tags now come from classifier (merged from former tagger agent)
+    if classification:
+        if classification.get("industry_tags"):
+            finance_meta["industry_tags"] = classification["industry_tags"]
+        if classification.get("event_tags"):
+            finance_meta["event_tags"] = classification["event_tags"]
 
-    # Extract stock symbols from entity results
-    stock_entities = [e for e in all_entities if e.get("type") in ("stock", "index")]
-    if stock_entities:
-        symbols = []
-        for e in stock_entities:
-            sym = e.get("symbol") or e.get("name", "")
-            if sym:
-                symbols.append(sym)
-        finance_meta["symbols"] = symbols
+    # Note: stock/index entity types removed — symbol resolution now handled
+    # externally. finance_metadata["symbols"] may still be set by ingest endpoint.
 
     # Set market from entity agent primary_market
     entity_result = agent_data.get("entity", {})
@@ -221,20 +228,19 @@ async def finalize_p2_merged_fields(
     # --- Merge finance_metadata contributions from P2 agents ---
     finance_meta = dict(article.finance_metadata) if article.finance_metadata else {}
 
-    sentiment_result = agent_data.get("sentiment", {})
-    if isinstance(sentiment_result, dict) and sentiment_result.get("success"):
-        sd = sentiment_result.get("data", {})
-        if sd.get("finance_sentiment"):
-            finance_meta["sentiment_tag"] = sd["finance_sentiment"]
-        if sd.get("investment_summary"):
-            finance_meta["investment_summary"] = sd["investment_summary"]
-
-    # Impact scorer results
-    impact_result = agent_data.get("impact_scorer", {})
-    if isinstance(impact_result, dict) and impact_result.get("success"):
-        id_ = impact_result.get("data", {})
-        if id_.get("impact_score") is not None:
-            finance_meta["impact_score"] = id_["impact_score"]
+    fa_result = agent_data.get("finance_analyzer") or agent_data.get("sentiment") or {}
+    if isinstance(fa_result, dict) and fa_result.get("success"):
+        fd = fa_result.get("data", {})
+        if fd.get("finance_sentiment"):
+            finance_meta["sentiment_tag"] = fd["finance_sentiment"]
+        if fd.get("investment_summary"):
+            finance_meta["investment_summary"] = fd["investment_summary"]
+        if fd.get("financial_entities"):
+            finance_meta["financial_entities"] = fd["financial_entities"]
+        if fd.get("sectors"):
+            finance_meta["sectors"] = fd["sectors"]
+        if fd.get("policy_analysis"):
+            finance_meta["policy_analysis"] = fd["policy_analysis"]
 
     # Build update dict
     update_values: dict[str, Any] = {}

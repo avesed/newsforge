@@ -397,7 +397,9 @@ class PipelineConsumer:
             from app.pipeline.agent_db_writer import finalize_merged_fields
 
             try:
-                merged = await finalize_merged_fields(article_id, agent_data, session)
+                merged = await finalize_merged_fields(
+                    article_id, agent_data, session, classification=classification,
+                )
                 update_values.update(merged)
             except Exception:
                 logger.warning(

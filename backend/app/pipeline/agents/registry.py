@@ -276,23 +276,14 @@ def _register_all_agents(registry: AgentRegistry) -> None:
     """Register all built-in agents."""
     from app.pipeline.agents.summarizer import UnifiedSummarizerAgent
     from app.pipeline.agents.entity import UnifiedEntityAgent
-    from app.pipeline.agents.sentiment import UnifiedSentimentAgent
-    from app.pipeline.agents.tagger import UnifiedTaggerAgent
-    from app.pipeline.agents.scorer import ImpactScorerAgent
-    from app.pipeline.agents.domain_specific import PoliticsImpactAgent, TechTrendAgent
-    from app.pipeline.agents.deep_reporter import DeepReporterAgent
+    from app.pipeline.agents.finance_analyzer import FinanceAnalyzerAgent
     from app.pipeline.agents.embedder import EmbedderAgent
     from app.pipeline.agents.translator import TranslatorAgent
 
     agents: list[AgentDefinition] = [
         UnifiedSummarizerAgent(),
         UnifiedEntityAgent(),
-        UnifiedSentimentAgent(),
-        UnifiedTaggerAgent(),
-        ImpactScorerAgent(),
-        PoliticsImpactAgent(),
-        TechTrendAgent(),
-        DeepReporterAgent(),
+        FinanceAnalyzerAgent(),
         EmbedderAgent(),
         TranslatorAgent(),
     ]
