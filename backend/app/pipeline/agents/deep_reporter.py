@@ -55,11 +55,13 @@ class DeepReporterAgent(AgentDefinition):
 总结性分析和前瞻
 
 报告写作要求：
-- 长度：800-2000字
+- 长度：根据原文信息量决定，信息充分时800-2000字，信息有限时相应缩短
 - 语言：中文
 - 风格：专业、客观、有深度
 - 引用原文中的关键数据和引言
-- 不要编造信息，基于原文分析"""
+- 严禁编造或补充原文未提及的信息、背景知识、分析或推测
+- 所有观点和事实必须能在原文中找到依据
+- 如果原文信息有限（如仅有标题或简短摘要），应如实缩减报告篇幅，省略无法基于原文撰写的章节，不得凭空扩写"""
 
     async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
         start = time.monotonic()

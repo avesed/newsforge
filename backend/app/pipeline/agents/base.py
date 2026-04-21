@@ -241,10 +241,20 @@ class AgentDefinition:
         The block is identical across all agents for the same article,
         maximizing prefix-cache hit rate on the LLM provider side.
         """
+        has_full_text = bool(context.full_text and len(context.full_text) > 100)
         body = context.full_text or context.summary or context.title
+
+        if has_full_text:
+            source_tag = "来源: 全文"
+        elif context.summary and len(context.summary) > 20:
+            source_tag = "来源: 仅摘要/标题（无全文，严禁补充原文未提及的信息）"
+        else:
+            source_tag = "来源: 仅标题（信息极有限，严禁补充原文未提及的信息）"
+
         return (
             f"标题: {context.title}\n"
             f"分类: {', '.join(context.categories)}\n"
+            f"{source_tag}\n"
             f"\n正文:\n{body}"
         )
 

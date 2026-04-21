@@ -269,6 +269,31 @@ class PipelineConsumer:
         article_id = article_data.get("article_id", str(uuid.uuid4()))
         title = article_data.get("title", "")
 
+        # Hydrate missing fields from DB when queue payload is incomplete
+        # (e.g. manual re-enqueue with only article_id)
+        if not article_data.get("url") or not title:
+            from sqlalchemy import select
+            from app.models.article import Article
+            factory_hydrate = get_session_factory()
+            async with factory_hydrate() as session:
+                row = (await session.execute(
+                    select(
+                        Article.url, Article.title, Article.summary,
+                        Article.language, Article.source_name, Article.full_text,
+                    ).where(Article.id == article_id)
+                )).one_or_none()
+                if row:
+                    article_data.setdefault("url", row.url or "")
+                    article_data.setdefault("title", row.title or "")
+                    article_data.setdefault("summary", row.summary or "")
+                    article_data.setdefault("language", row.language)
+                    article_data.setdefault("source_name", row.source_name)
+                    # If article already has full_text from a prior fetch, pass it through
+                    if row.full_text and not article_data.get("rss_full_text"):
+                        article_data["rss_full_text"] = row.full_text
+                    title = article_data.get("title", "")
+                    logger.info("Hydrated article from DB: %s", title[:80])
+
         logger.info("Processing article: %s", title[:80])
 
         # Run the full pipeline
@@ -316,6 +341,19 @@ class PipelineConsumer:
                 content_status = "fetched"
             else:
                 content_status = "fetch_failed"
+
+            # Guard: don't downgrade a previously successful status
+            _STATUS_RANK = {"processed": 4, "fetched": 3, "partial": 2, "fetch_failed": 1, "pending": 0, "failed": 0}
+            existing_result = await session.execute(
+                select(Article.content_status).where(Article.id == article_id)
+            )
+            existing_status = existing_result.scalar_one_or_none()
+            if existing_status and _STATUS_RANK.get(existing_status, 0) > _STATUS_RANK.get(content_status, 0):
+                logger.info(
+                    "Keeping higher content_status '%s' (not downgrading to '%s') for %s",
+                    existing_status, content_status, article_id[:8],
+                )
+                content_status = existing_status
 
             # Build update values (aligned with Article model from migration 002)
             cat_slugs = [c.get("slug") for c in classification.get("categories", [])]

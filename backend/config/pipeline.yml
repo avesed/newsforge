@@ -56,14 +56,18 @@ agent_triggers:
 routing_rules:
   high_value_threshold: 60       # >= 60: full agent pipeline
   medium_value_threshold: 30     # 30-59: limited agents (summarizer + sentiment + translator)
-  lightweight_threshold: 15      # 15-29: lightweight path (entity + tagger only)
+  lightweight_threshold: 0       # >0: lightweight path (summarizer + entity + tagger + translator)
   market_impact_upgrades_to_high: true  # has_market_impact forces high-value path
   lightweight_agents:            # Agents for lightweight articles (score 15-29)
+    - summarizer
     - entity
     - tagger
+    - translator
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
     - sentiment
+    - entity
+    - tagger
     - translator
 
 # Per-category pipeline depth (legacy — still used for content fetch decisions)
