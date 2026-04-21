@@ -25,6 +25,7 @@ agent_triggers:
     - finance_analyzer
     - entity
     - translator
+    - embedder
 
   # Category-specific agents (none — finance_analyzer handles all categories)
   category_triggered:
@@ -40,10 +41,7 @@ agent_triggers:
     other: []
 
   # Condition-based triggers (evaluated at runtime)
-  condition_triggered:
-    - agents:
-        - embedder
-      condition: "value_score >= 30"  # All medium+ articles get embedded
+  condition_triggered: []
 
 # Agent priority tiers — split agents into P1 (user-facing, fast) and P2 (analytical, async)
 # P1 agents complete before article is shown to user; P2 runs fire-and-forget afterward.
@@ -66,11 +64,13 @@ routing_rules:
     - summarizer
     - entity
     - translator
+    - embedder
   medium_value_agents:           # Agents for medium-value articles
     - summarizer
     - finance_analyzer
     - entity
     - translator
+    - embedder
 
 # Per-category pipeline depth (legacy — still used for content fetch decisions)
 categories:

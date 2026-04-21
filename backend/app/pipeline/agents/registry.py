@@ -197,7 +197,14 @@ class AgentRegistry:
         p2_ids = [aid for aid in all_ids if aid in p2_ids_set]
 
         if not p2_enabled:
-            logger.debug("P2 agents disabled by config, dropping: %s", p2_ids)
+            # When P2 is disabled, keep embedder — move it to P1 tail
+            kept = [aid for aid in p2_ids if aid == "embedder"]
+            dropped = [aid for aid in p2_ids if aid != "embedder"]
+            if dropped:
+                logger.debug("P2 agents disabled by config, dropping: %s", dropped)
+            if kept:
+                logger.debug("P2 disabled but keeping embedder in P1: %s", kept)
+                p1_ids = p1_ids + kept
             p2_ids = []
 
         return p1_ids, p2_ids
