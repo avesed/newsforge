@@ -444,3 +444,76 @@ async def get_agent_queue(
     queue_len = await aq.get_queue_length(redis)
 
     return {"queue_length": queue_len, "items": items}
+
+
+@router.get("/agent-priority")
+async def get_agent_priority(admin: User = Depends(require_admin)):
+    """Get agent priority tier configuration."""
+    from app.pipeline.agents.registry import get_agent_registry
+
+    registry = get_agent_registry()
+
+    # Read from Redis first (runtime override), fall back to pipeline.yml
+    redis = await get_redis()
+    override = await redis.get("nf:pipeline:agent_priority")
+
+    if override:
+        import json
+        config = json.loads(override)
+    else:
+        from app.core.config import load_pipeline_config
+        pipeline_config = load_pipeline_config()
+        config = pipeline_config.get("agent_priority", {})
+
+    p2_enabled = config.get("p2_enabled", True)
+    p1_agents = set(config.get("p1_agents", []))
+
+    # Get all registered agents
+    all_agents = list(registry.all_agents().keys())
+
+    # Build response with each agent's tier
+    agents = []
+    for agent_id in sorted(all_agents):
+        agent_def = registry.get_agent(agent_id)
+        agents.append({
+            "agent_id": agent_id,
+            "name": agent_def.name if agent_def else agent_id,
+            "description": agent_def.description if agent_def else "",
+            "tier": "p1" if agent_id in p1_agents else "p2",
+            "requires": agent_def.requires if agent_def else [],
+        })
+
+    return {
+        "p2_enabled": p2_enabled,
+        "agents": agents,
+    }
+
+
+@router.put("/agent-priority")
+async def update_agent_priority(
+    body: dict,
+    admin: User = Depends(require_admin),
+):
+    """Update agent priority tier configuration.
+
+    Body: {"p2_enabled": bool, "p1_agents": ["summarizer", "translator", ...]}
+    Stored in Redis for runtime override. Reset registry to pick up changes.
+    """
+    import json
+    from app.pipeline.agents.registry import set_priority_override, reset_agent_registry
+
+    redis = await get_redis()
+
+    config = {
+        "p2_enabled": body.get("p2_enabled", True),
+        "p1_agents": body.get("p1_agents", []),
+    }
+
+    # Store in Redis (persistent until explicitly changed)
+    await redis.set("nf:pipeline:agent_priority", json.dumps(config))
+
+    # Update in-process override and reset registry singleton
+    set_priority_override(config)
+    reset_agent_registry()
+
+    return {"status": "updated", **config}

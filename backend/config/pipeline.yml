@@ -52,6 +52,18 @@ agent_triggers:
         - embedder
       condition: "value_score >= 30"  # All medium+ articles get embedded
 
+# Agent priority tiers — split agents into P1 (user-facing, fast) and P2 (analytical, async)
+# P1 agents complete before article is shown to user; P2 runs fire-and-forget afterward.
+agent_priority:
+  p2_enabled: true              # false = standalone deployment, skip all analytical agents
+  p1_agents:                    # User-facing agents (fast, always enabled)
+    - summarizer
+    - translator
+    - entity
+    - tagger
+  # All other resolved agents are implicitly P2 (sentiment, impact_scorer,
+  # tech_trend, politics_impact, embedder, deep_reporter)
+
 # Routing rules — value-based processing tiers
 routing_rules:
   high_value_threshold: 60       # >= 60: full agent pipeline

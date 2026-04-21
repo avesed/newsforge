@@ -166,6 +166,7 @@ class AgentWorker:
         """Execute an agent group with timeout and error handling."""
         group_id = group.get("group_id", "?")
         result_key = group.get("result_key")
+        is_fire_and_forget = group.get("fire_and_forget", False)
 
         if not result_key:
             logger.error("Agent group %s missing result_key, dropping", group_id[:8])
@@ -177,7 +178,13 @@ class AgentWorker:
                 self._execute_group(redis, group),
                 timeout=self._per_group_timeout,
             )
-            await aq.post_results(redis, result_key, results)
+
+            if is_fire_and_forget:
+                await self._finalize_fire_and_forget(redis, group, results)
+                await aq.increment_metrics(redis, "p2_completed", 1)
+            else:
+                await aq.post_results(redis, result_key, results)
+
             self._processed += 1
             await aq.increment_metrics(redis, "completed", 1)
 
@@ -186,15 +193,24 @@ class AgentWorker:
                 "Agent group %s timed out after %ds",
                 group_id[:8], self._per_group_timeout,
             )
-            await aq.post_results(redis, result_key, {"_error": "timeout"})
+            if is_fire_and_forget:
+                # Attempt partial finalization with whatever agents completed
+                await self._partial_p2_finalize(redis, group)
+                await aq.increment_metrics(redis, "p2_timeouts", 1)
+            else:
+                await aq.post_results(redis, result_key, {"_error": "timeout"})
             await aq.increment_metrics(redis, "timeouts", 1)
 
         except Exception:
             logger.exception("Agent group %s failed", group_id[:8])
-            try:
-                await aq.post_results(redis, result_key, {"_error": "worker_error"})
-            except Exception:
-                logger.warning("Failed to post error result for group %s", group_id[:8])
+            if is_fire_and_forget:
+                await self._partial_p2_finalize(redis, group)
+                await aq.increment_metrics(redis, "p2_errors", 1)
+            else:
+                try:
+                    await aq.post_results(redis, result_key, {"_error": "worker_error"})
+                except Exception:
+                    logger.warning("Failed to post error result for group %s", group_id[:8])
             await aq.increment_metrics(redis, "errors", 1)
 
         finally:
@@ -393,6 +409,169 @@ class AgentWorker:
         )
 
         return {"story_matcher": result}
+
+    async def _finalize_fire_and_forget(
+        self, redis, group: dict, results: dict,
+    ) -> None:
+        """Self-finalize a fire-and-forget (P2) agent group.
+
+        Called after P2 agents complete successfully. Steps execute in order;
+        if the DB merge fails, subsequent steps (checkpoint cleanup, webhook)
+        are skipped to preserve recoverability.
+        """
+        article_id = group.get("context_data", {}).get("article_id")
+        if not article_id:
+            return
+
+        successful_ids = [
+            aid for aid, r in results.items()
+            if isinstance(r, dict) and r.get("success")
+        ]
+
+        # 1. Merge P2 results into DB (CRITICAL — if this fails, skip everything else)
+        try:
+            from app.pipeline.agent_db_writer import finalize_p2_merged_fields
+            from app.db.database import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as session:
+                await finalize_p2_merged_fields(
+                    article_id, results, successful_ids, session,
+                )
+                await session.commit()
+        except Exception:
+            logger.error(
+                "P2 self-finalization DB merge failed for %s, "
+                "keeping checkpoint for retry",
+                article_id[:8], exc_info=True,
+            )
+            await aq.increment_metrics(redis, "p2_merge_failures", 1)
+            # Do NOT delete checkpoint or fire webhook — data not persisted
+            return
+
+        # 2. Record pipeline event
+        try:
+            from app.pipeline.events import record_event
+            await record_event(
+                article_id, "p2_complete", "success",
+                metadata={"agents": successful_ids},
+            )
+        except Exception:
+            logger.debug("P2 record_event failed for %s", article_id[:8])
+
+        # 3. Clean up checkpoint (both P1 and P2 done now)
+        try:
+            await redis.delete(f"nf:agent:checkpoint:{article_id}")
+        except Exception:
+            logger.debug("P2 checkpoint cleanup failed for %s", article_id[:8])
+
+        # 4. Emit SSE event (frontend can optionally refresh enriched data)
+        try:
+            await redis.xadd(
+                QUEUE_STREAM,
+                {
+                    "type": "p2_complete",
+                    "article_id": article_id,
+                    "agents": ",".join(successful_ids),
+                },
+                maxlen=500,
+                approximate=True,
+            )
+        except Exception:
+            logger.debug("P2 SSE emit failed for %s", article_id[:8])
+
+        # 5. Trigger article.enriched webhook (WebStock can subscribe)
+        try:
+            from app.services.webhook_service import trigger_webhooks
+            from app.db.database import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as session:
+                await trigger_webhooks(session, "article.enriched", {
+                    "article_id": article_id,
+                    "p2_agents": successful_ids,
+                })
+        except Exception:
+            logger.warning("P2 webhook failed for %s", article_id[:8], exc_info=True)
+
+        # 6. Invalidate caches (P2 added sentiment, scores, etc.)
+        try:
+            from app.services.cache_service import cache
+            await cache.invalidate_pattern("articles:*")
+            await cache.invalidate_pattern("homepage:*")
+        except Exception:
+            logger.debug("P2 cache invalidation failed for %s", article_id[:8])
+
+        logger.info(
+            "P2 self-finalized: %s | agents=%s",
+            article_id[:8], successful_ids,
+        )
+
+    async def _partial_p2_finalize(self, redis, group: dict) -> None:
+        """Attempt partial finalization after P2 timeout/error.
+
+        Reads per-agent checkpoint data (already written by _persist_and_emit
+        during execution) and updates agents_executed for agents that completed
+        before the failure. Does NOT delete checkpoint — leaves it for retry.
+        """
+        article_id = group.get("context_data", {}).get("article_id")
+        if not article_id:
+            return
+
+        logger.error(
+            "P2 group failed for article %s, attempting partial finalization",
+            article_id[:8],
+        )
+
+        # Read whatever agents completed from checkpoint
+        try:
+            checkpoint_key = f"nf:agent:checkpoint:{article_id}"
+            raw_data = await redis.hgetall(checkpoint_key)
+            if not raw_data:
+                return
+
+            completed_ids = []
+            for aid_raw, data_raw in raw_data.items():
+                aid = aid_raw.decode() if isinstance(aid_raw, bytes) else aid_raw
+                try:
+                    parsed = json.loads(data_raw if isinstance(data_raw, str) else data_raw.decode())
+                    if parsed.get("success"):
+                        completed_ids.append(aid)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+
+            # Update agents_executed with whatever P2 agents completed
+            p2_agents = group.get("agents", [])
+            p2_completed = [aid for aid in completed_ids if aid in p2_agents]
+            if p2_completed:
+                from app.db.database import get_session_factory
+                from sqlalchemy import select as sql_select, update as sql_update
+                from app.models.article import Article
+
+                factory = get_session_factory()
+                async with factory() as session:
+                    result = await session.execute(
+                        sql_select(Article.agents_executed)
+                        .where(Article.id == article_id)
+                    )
+                    existing = list(result.scalar_one_or_none() or [])
+                    new_agents = [aid for aid in p2_completed if aid not in existing]
+                    if new_agents:
+                        await session.execute(
+                            sql_update(Article)
+                            .where(Article.id == article_id)
+                            .values(agents_executed=existing + new_agents)
+                        )
+                        await session.commit()
+                        logger.info(
+                            "P2 partial finalize: %s | completed=%s",
+                            article_id[:8], new_agents,
+                        )
+        except Exception:
+            logger.warning(
+                "P2 partial finalization failed for %s",
+                article_id[:8], exc_info=True,
+            )
 
     async def _config_poller(self, redis) -> None:
         """Poll Redis for concurrency target changes."""

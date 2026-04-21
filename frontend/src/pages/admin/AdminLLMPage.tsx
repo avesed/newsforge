@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Save,
   Check,
+  Layers,
 } from "lucide-react";
 import {
   getLLMProviders,
@@ -32,6 +33,8 @@ import {
   getAgentConfigs,
   upsertAgentConfig,
   deleteAgentConfig,
+  getAgentPriority,
+  updateAgentPriority,
 } from "@/api/admin";
 import type {
   LLMProviderRaw,
@@ -59,6 +62,7 @@ function LLMProviderForm({
     apiBase: string;
     defaultModel: string;
     embeddingModel?: string;
+    extraModels?: string[];
     extraParams?: Record<string, unknown>;
   }) => void;
   onCancel: () => void;
@@ -71,6 +75,17 @@ function LLMProviderForm({
   const [apiBase, setApiBase] = useState(initial?.apiBase ?? "https://api.openai.com/v1");
   const [defaultModel, setDefaultModel] = useState(initial?.defaultModel ?? "gpt-4o-mini");
   const [embeddingModel, setEmbeddingModel] = useState(initial?.embeddingModel ?? "");
+  // Extra available models — stored as purposeModels._extra on the provider
+  const [extraModelsStr, setExtraModelsStr] = useState(() => {
+    const pm = initial?.purposeModels;
+    if (pm?._extra) return pm._extra;
+    // Also collect any existing purpose model values as initial display
+    if (pm) {
+      const vals = Object.values(pm).filter(Boolean);
+      return vals.length > 0 ? vals.join(", ") : "";
+    }
+    return "";
+  });
   const [extraParamsStr, setExtraParamsStr] = useState(
     initial?.extraParams ? JSON.stringify(initial.extraParams, null, 2) : "",
   );
@@ -111,6 +126,12 @@ function LLMProviderForm({
         return;
       }
     }
+    // Parse extra models from comma-separated string
+    const parsedExtraModels = extraModelsStr
+      .split(/[,，\n]/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
     const payload: {
       name: string;
       providerType: string;
@@ -118,6 +139,7 @@ function LLMProviderForm({
       apiBase: string;
       defaultModel: string;
       embeddingModel?: string;
+      extraModels?: string[];
       extraParams?: Record<string, unknown>;
     } = { name, providerType, apiKey: apiKey || undefined!, apiBase, defaultModel };
     // Don't send empty apiKey on edit — keeps the existing key in DB
@@ -126,6 +148,9 @@ function LLMProviderForm({
     }
     if (embeddingModel) {
       payload.embeddingModel = embeddingModel;
+    }
+    if (parsedExtraModels.length > 0) {
+      payload.extraModels = parsedExtraModels;
     }
     if (parsedExtra) {
       payload.extraParams = parsedExtra;
@@ -228,6 +253,23 @@ function LLMProviderForm({
         </div>
       </div>
 
+      {/* Additional available models */}
+      <div className="flex flex-col gap-1">
+        <label className="text-xs text-muted-foreground">
+          {t("admin.availableModels", "其他可用模型")}
+        </label>
+        <input
+          type="text"
+          value={extraModelsStr}
+          onChange={(e) => setExtraModelsStr(e.target.value)}
+          placeholder="qwen3-32b, qwen3-8b, deepseek-v3"
+          className={INPUT_CLASS}
+        />
+        <span className="text-xs text-muted-foreground">
+          {t("admin.availableModelsHint", "逗号分隔。这些模型会出现在 Agent 配置的模型选择列表中。")}
+        </span>
+      </div>
+
       {/* Extra params */}
       <div className="flex flex-col gap-1">
         <label className="text-xs text-muted-foreground">
@@ -304,6 +346,24 @@ function LLMProviderForm({
 // ---------------------------------------------------------------------------
 // LLM Providers Content (existing)
 // ---------------------------------------------------------------------------
+/** Convert form data (extraModels[]) to API data (purposeModels._extra). */
+function mapFormToApi(data: {
+  name: string;
+  providerType: string;
+  apiKey: string;
+  apiBase: string;
+  defaultModel: string;
+  embeddingModel?: string;
+  extraModels?: string[];
+  extraParams?: Record<string, unknown>;
+}) {
+  const { extraModels, ...rest } = data;
+  if (extraModels && extraModels.length > 0) {
+    return { ...rest, purposeModels: { _extra: extraModels.join(", ") } };
+  }
+  return rest;
+}
+
 function LLMContent() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -413,7 +473,7 @@ function LLMContent() {
       {/* Create form */}
       {showForm && (
         <LLMProviderForm
-          onSave={(data) => createMutation.mutate(data)}
+          onSave={(data) => createMutation.mutate(mapFormToApi(data))}
           onCancel={() => {
             setShowForm(false);
             setError("");
@@ -442,7 +502,7 @@ function LLMContent() {
             <LLMProviderForm
               initial={provider}
               onSave={(data) =>
-                updateMutation.mutate({ id: provider.id, data })
+                updateMutation.mutate({ id: provider.id, data: mapFormToApi(data) })
               }
               onCancel={() => {
                 setEditingId(null);
@@ -1078,6 +1138,10 @@ function AgentConfigRow({
   onChange,
   onReset,
   isDeleting,
+  tier,
+  tierLocked,
+  tierLockedReason,
+  onTierToggle,
 }: {
   agentId: string;
   state: AgentState;
@@ -1088,6 +1152,10 @@ function AgentConfigRow({
   onChange: (newState: AgentState) => void;
   onReset: () => void;
   isDeleting: boolean;
+  tier?: "p1" | "p2" | undefined;
+  tierLocked?: boolean | undefined;
+  tierLockedReason?: string | undefined;
+  onTierToggle?: (() => void) | undefined;
 }) {
   const { t } = useTranslation();
 
@@ -1110,6 +1178,29 @@ function AgentConfigRow({
         </div>
       </td>
       <td className="px-3 py-2.5">
+        {tier != null && onTierToggle != null ? (
+          <button
+            onClick={onTierToggle}
+            disabled={tierLocked}
+            title={tierLocked ? tierLockedReason : undefined}
+            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
+              tierLocked ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+            } ${
+              tier === "p1"
+                ? "bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-900/50"
+                : "bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+            }`}
+          >
+            <Layers className="h-3 w-3" />
+            {tier === "p1"
+              ? t("admin.tierP1", "P1 高优先级")
+              : t("admin.tierP2", "P2 分析")}
+          </button>
+        ) : (
+          <span className="text-xs text-muted-foreground">-</span>
+        )}
+      </td>
+      <td className="px-3 py-2.5">
         <select
           value={state.providerId}
           onChange={(e) => onChange({ ...state, providerId: e.target.value })}
@@ -1124,18 +1215,18 @@ function AgentConfigRow({
         </select>
       </td>
       <td className="px-3 py-2.5">
-        <select
+        <input
+          list={`models-${agentId}`}
           value={state.model}
           onChange={(e) => onChange({ ...state, model: e.target.value })}
+          placeholder={t("admin.default")}
           className={INPUT_CLASS + " w-full text-xs"}
-        >
-          <option value="">{t("admin.default")}</option>
+        />
+        <datalist id={`models-${agentId}`}>
           {availableModels.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
+            <option key={m} value={m} />
           ))}
-        </select>
+        </datalist>
       </td>
       <td className="px-3 py-2.5">
         <select
@@ -1195,7 +1286,12 @@ function AgentConfigContent() {
     queryFn: getLLMProfiles,
   });
 
-  const isLoading = agentLoading || providersLoading || profilesLoading;
+  const { data: priorityData, isLoading: priorityLoading } = useQuery({
+    queryKey: ["admin", "agent-priority"],
+    queryFn: getAgentPriority,
+  });
+
+  const isLoading = agentLoading || providersLoading || profilesLoading || priorityLoading;
 
   // Lifted state
   const [agentStates, setAgentStates] = useState<Record<string, AgentState>>({});
@@ -1204,6 +1300,12 @@ function AgentConfigContent() {
   const [saved, setSaved] = useState(false);
   const [deletingAgent, setDeletingAgent] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  // Priority tier state
+  const [p2Enabled, setP2Enabled] = useState(false);
+  const [originalP2Enabled, setOriginalP2Enabled] = useState(false);
+  const [tierOverrides, setTierOverrides] = useState<Record<string, "p1" | "p2">>({});
+  const [originalTiers, setOriginalTiers] = useState<Record<string, "p1" | "p2">>({});
 
   // Initialize / sync from fetched data
   useEffect(() => {
@@ -1222,18 +1324,66 @@ function AgentConfigContent() {
     }
   }, [agentData]);
 
-  // Extract unique model names from all providers
+  // Initialize priority data
+  useEffect(() => {
+    if (priorityData) {
+      setP2Enabled(priorityData.p2Enabled);
+      setOriginalP2Enabled(priorityData.p2Enabled);
+      const tiers: Record<string, "p1" | "p2"> = {};
+      for (const agent of priorityData.agents) {
+        tiers[agent.agentId] = agent.tier;
+      }
+      setTierOverrides(tiers);
+      setOriginalTiers(tiers);
+    }
+  }, [priorityData]);
+
+  // Build a map of agents that require P2 agents (locked as P2)
+  const lockedP2Agents = useMemo(() => {
+    if (!priorityData) return new Set<string>();
+    const locked = new Set<string>();
+    for (const agent of priorityData.agents) {
+      if (agent.requires.length > 0) {
+        // If this agent requires another agent that is P2, it may be locked
+        // Actually: agents with `requires` containing P2 agents are themselves locked as P2
+        const hasP2Dependency = agent.requires.some((dep) => {
+          const depTier = tierOverrides[dep];
+          return depTier === "p2";
+        });
+        if (hasP2Dependency) {
+          locked.add(agent.agentId);
+        }
+      }
+    }
+    return locked;
+  }, [priorityData, tierOverrides]);
+
+  // Extract unique model names from all providers (including purposeModels)
   const availableModels = useMemo(() => {
     if (!providers) return [];
     const modelSet = new Set<string>();
     for (const p of providers) {
       if (p.defaultModel) modelSet.add(p.defaultModel);
       if (p.embeddingModel) modelSet.add(p.embeddingModel);
+      if (p.purposeModels) {
+        for (const [key, val] of Object.entries(p.purposeModels)) {
+          if (!val) continue;
+          if (key === "_extra") {
+            // Comma-separated list of additional available models
+            for (const m of val.split(/[,，]/)) {
+              const trimmed = m.trim();
+              if (trimmed) modelSet.add(trimmed);
+            }
+          } else {
+            modelSet.add(val);
+          }
+        }
+      }
     }
     return Array.from(modelSet).sort();
   }, [providers]);
 
-  const isDirty = useCallback(
+  const isConfigDirty = useCallback(
     (agentId: string) => {
       const current = agentStates[agentId];
       const original = originalStates[agentId];
@@ -1247,13 +1397,31 @@ function AgentConfigContent() {
     [agentStates, originalStates],
   );
 
-  const dirtyCount = useMemo(
-    () => Object.keys(agentStates).filter(isDirty).length,
-    [agentStates, isDirty],
+  const isTierDirty = useMemo(() => {
+    if (p2Enabled !== originalP2Enabled) return true;
+    for (const agentId of Object.keys(tierOverrides)) {
+      if (tierOverrides[agentId] !== originalTiers[agentId]) return true;
+    }
+    return false;
+  }, [p2Enabled, originalP2Enabled, tierOverrides, originalTiers]);
+
+  const configDirtyCount = useMemo(
+    () => Object.keys(agentStates).filter(isConfigDirty).length,
+    [agentStates, isConfigDirty],
   );
+
+  const dirtyCount = configDirtyCount + (isTierDirty ? 1 : 0);
 
   const handleChange = useCallback((agentId: string, newState: AgentState) => {
     setAgentStates((prev) => ({ ...prev, [agentId]: newState }));
+    setSaved(false);
+  }, []);
+
+  const handleTierToggle = useCallback((agentId: string) => {
+    setTierOverrides((prev) => ({
+      ...prev,
+      [agentId]: prev[agentId] === "p1" ? "p2" : "p1",
+    }));
     setSaved(false);
   }, []);
 
@@ -1285,7 +1453,8 @@ function AgentConfigContent() {
     setSaving(true);
     setError("");
     try {
-      const dirtyAgents = Object.keys(agentStates).filter(isDirty);
+      // Save agent config changes
+      const dirtyAgents = Object.keys(agentStates).filter(isConfigDirty);
       for (const agentId of dirtyAgents) {
         const state = agentStates[agentId]!;
         await upsertAgentConfig(agentId, {
@@ -1294,6 +1463,19 @@ function AgentConfigContent() {
           profileId: state.profileId || null,
         });
       }
+
+      // Save priority tier changes
+      if (isTierDirty) {
+        const p1Agents = Object.entries(tierOverrides)
+          .filter(([, tier]) => tier === "p1")
+          .map(([agentId]) => agentId);
+        await updateAgentPriority({
+          p2Enabled,
+          p1Agents,
+        });
+        void queryClient.invalidateQueries({ queryKey: ["admin", "agent-priority"] });
+      }
+
       void queryClient.invalidateQueries({ queryKey: ["admin", "agent-configs"] });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -1313,6 +1495,9 @@ function AgentConfigContent() {
   }
 
   const allAgents = agentData?.registeredAgents ?? [];
+  const priorityAgentMap = new Map(
+    (priorityData?.agents ?? []).map((a) => [a.agentId, a]),
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -1324,6 +1509,48 @@ function AgentConfigContent() {
           {t("admin.agentConfigHint")}
         </p>
       </div>
+
+      {/* P2 Enabled Toggle */}
+      {priorityData && (
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-card p-4">
+          <div className="flex flex-1 flex-col gap-0.5">
+            <div className="flex items-center gap-2">
+              <Layers className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm font-medium text-foreground">
+                {t("admin.p2Enabled", "分析类 Agent (P2)")}
+              </span>
+              {p2Enabled !== originalP2Enabled && (
+                <span className="text-yellow-500 text-xs">*</span>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "admin.p2EnabledHint",
+                "启用后，P2 级别的 Agent 将在 Pipeline 中执行深度分析。关闭则仅运行 P1 高优先级 Agent。",
+              )}
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              setP2Enabled((prev) => !prev);
+              setSaved(false);
+            }}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors ${
+              p2Enabled
+                ? "bg-blue-600"
+                : "bg-gray-300 dark:bg-gray-600"
+            }`}
+            role="switch"
+            aria-checked={p2Enabled}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                p2Enabled ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md bg-destructive/10 p-3 text-sm text-destructive">
@@ -1337,6 +1564,9 @@ function AgentConfigContent() {
             <tr className="border-b border-border bg-muted/50">
               <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                 {t("admin.agentId")}
+              </th>
+              <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
+                {t("admin.tier", "Tier")}
               </th>
               <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground">
                 {t("admin.provider")}
@@ -1355,6 +1585,15 @@ function AgentConfigContent() {
               const state = agentStates[agentId];
               const original = originalStates[agentId];
               if (!state || !original) return null;
+              const priorityAgent = priorityAgentMap.get(agentId);
+              const currentTier = tierOverrides[agentId];
+              const isLocked = lockedP2Agents.has(agentId);
+              const lockReason = isLocked
+                ? t(
+                    "admin.tierLocked",
+                    "该 Agent 依赖 P2 级别 Agent，无法切换为 P1",
+                  )
+                : undefined;
               return (
                 <AgentConfigRow
                   key={agentId}
@@ -1367,6 +1606,12 @@ function AgentConfigContent() {
                   onChange={(newState) => handleChange(agentId, newState)}
                   onReset={() => void handleReset(agentId)}
                   isDeleting={deletingAgent === agentId}
+                  tier={priorityAgent ? currentTier : undefined}
+                  tierLocked={isLocked}
+                  tierLockedReason={lockReason}
+                  onTierToggle={
+                    priorityAgent ? () => handleTierToggle(agentId) : undefined
+                  }
                 />
               );
             })}

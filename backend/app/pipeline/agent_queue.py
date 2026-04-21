@@ -29,10 +29,13 @@ async def submit_agent_group(
     agents: list[str],
     prior_results: dict | None = None,
     display_info: dict | None = None,
+    fire_and_forget: bool = False,
 ) -> tuple[str, str]:
     """Submit an agent group to the unified queue.
 
     Returns (group_id, result_key) — caller should await wait_results(result_key).
+    When ``fire_and_forget=True``, no caller waits on the result; the worker
+    self-finalizes DB writes and the result_key gets a short TTL.
     """
     group_id = str(uuid.uuid4())
     result_key = f"nf:agent:result:{group_id}"
@@ -46,12 +49,14 @@ async def submit_agent_group(
         "display_info": display_info or {},
         "result_key": result_key,
         "submitted_at": time.time(),
+        "fire_and_forget": fire_and_forget,
     }
 
     await redis.rpush(AGENT_QUEUE, json.dumps(payload))
+
     logger.debug(
-        "Agent group submitted: %s type=%s agents=%s",
-        group_id[:8], group_type, agents,
+        "Agent group submitted: %s type=%s agents=%s fire_and_forget=%s",
+        group_id[:8], group_type, agents, fire_and_forget,
     )
     return group_id, result_key
 

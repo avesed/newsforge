@@ -471,6 +471,51 @@ export async function resetCircuitBreaker() {
   return res.data;
 }
 
+// --- Agent Priority ---
+
+export interface AgentPriorityAgent {
+  agentId: string;
+  name: string;
+  description: string;
+  tier: "p1" | "p2";
+  requires: string[];
+}
+
+export interface AgentPriorityConfig {
+  p2Enabled: boolean;
+  agents: AgentPriorityAgent[];
+}
+
+export async function getAgentPriority(): Promise<AgentPriorityConfig> {
+  const res = await apiClient.get("/admin/pipeline/agent-priority");
+  // Backend returns snake_case; manually map to camelCase
+  const raw = res.data as {
+    p2_enabled: boolean;
+    agents: { agent_id: string; name: string; description: string; tier: "p1" | "p2"; requires: string[] }[];
+  };
+  return {
+    p2Enabled: raw.p2_enabled,
+    agents: raw.agents.map((a) => ({
+      agentId: a.agent_id,
+      name: a.name,
+      description: a.description,
+      tier: a.tier,
+      requires: a.requires,
+    })),
+  };
+}
+
+export async function updateAgentPriority(data: {
+  p2Enabled: boolean;
+  p1Agents: string[];
+}) {
+  const res = await apiClient.put("/admin/pipeline/agent-priority", {
+    p2_enabled: data.p2Enabled,
+    p1_agents: data.p1Agents,
+  });
+  return res.data;
+}
+
 // --- Import/Export ---
 
 export interface ImportResult {

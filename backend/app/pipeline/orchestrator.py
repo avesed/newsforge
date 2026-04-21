@@ -620,12 +620,15 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             f"Classification returned defaults for {title[:80]}"
         )
 
-    # --- Phase 4: Dynamic agents (via unified agent queue) ---
+    # --- Phase 4: Dynamic agents (tiered: P1 blocking + P2 fire-and-forget) ---
     await _report_progress("agents")
     registry = get_agent_registry()
-    phase_agents = registry.resolve_agents(categories, value_score, has_market_impact)
+    p1_agent_ids, p2_agent_ids = registry.resolve_agents_tiered(
+        categories, value_score, has_market_impact
+    )
 
-    if not phase_agents:
+    all_resolved_ids = p1_agent_ids + p2_agent_ids
+    if not all_resolved_ids:
         logger.info("No agents resolved for article (value=%d): %s", value_score, title[:60])
         results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
         return results
@@ -667,16 +670,20 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             len(completed_from_checkpoint), list(completed_from_checkpoint.keys()),
         )
 
-    agent_ids_to_run: list[str] = []
-    for phase_num in sorted(phase_agents.keys()):
-        for agent in phase_agents[phase_num]:
-            if agent.agent_id in completed_from_checkpoint and agent.agent_id not in failed_agent_ids:
-                dep_needs_rerun = any(dep in failed_agent_ids for dep in agent.requires)
+    # Filter out already-completed agents (checkpoint) from P1 and P2
+    def _needs_run(agent_id: str) -> bool:
+        if agent_id in completed_from_checkpoint and agent_id not in failed_agent_ids:
+            agent_def = registry.get_agent(agent_id)
+            if agent_def:
+                dep_needs_rerun = any(dep in failed_agent_ids for dep in agent_def.requires)
                 if not dep_needs_rerun:
-                    continue
-            agent_ids_to_run.append(agent.agent_id)
+                    return False
+        return True
 
-    if not agent_ids_to_run:
+    p1_to_run = [aid for aid in p1_agent_ids if _needs_run(aid)]
+    p2_to_run = [aid for aid in p2_agent_ids if _needs_run(aid)]
+
+    if not p1_to_run and not p2_to_run:
         logger.info("All agents already completed from checkpoint")
         results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
         return results
@@ -696,59 +703,80 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
         "source_name": article_data.get("source_name"),
     }
 
-    # Submit agent group to unified queue
     from app.pipeline import agent_queue as aq
 
-    group_id, result_key = await aq.submit_agent_group(
-        redis,
-        group_type="article",
-        context_data=context_data,
-        agents=agent_ids_to_run,
-        prior_results=completed_from_checkpoint,
-    )
+    p1_results: dict[str, dict] = {}
 
-    logger.info(
-        "Agent group submitted: %s agents=%s (group=%s)",
-        title[:50], agent_ids_to_run, group_id[:8],
-    )
-
-    # Wait for results — worker owns the timeout and always posts a result
-    # (either success or {"_error": "timeout"}), so we just wait.
-    agent_results = await aq.wait_results(redis, result_key)
-
-    if agent_results is None:
-        raise RuntimeError(
-            f"Agent worker did not respond for article: {title[:80]}"
+    # --- Phase 4a: Submit P1 group (blocking wait) ---
+    if p1_to_run:
+        p1_group_id, p1_result_key = await aq.submit_agent_group(
+            redis,
+            group_type="article",
+            context_data=context_data,
+            agents=p1_to_run,
+            prior_results=completed_from_checkpoint,
+        )
+        logger.info(
+            "P1 agent group submitted: %s agents=%s (group=%s)",
+            title[:50], p1_to_run, p1_group_id[:8],
         )
 
-    if "_error" in agent_results:
-        raise RuntimeError(
-            f"Agent worker error ({agent_results['_error']}) for article: {title[:80]}"
+        p1_results = await aq.wait_results(redis, p1_result_key)
+
+        if p1_results is None:
+            raise RuntimeError(
+                f"Agent worker did not respond (P1) for article: {title[:80]}"
+            )
+        if "_error" in p1_results:
+            raise RuntimeError(
+                f"Agent worker error P1 ({p1_results['_error']}) for article: {title[:80]}"
+            )
+
+        for aid, result_data in p1_results.items():
+            results["agents"][aid] = result_data
+
+    # --- Phase 4b: Submit P2 group (fire-and-forget) ---
+    p2_group_id = None
+    if p2_to_run:
+        # P2 gets checkpoint + P1 results as prior_results (for dependency resolution)
+        p2_prior = {**completed_from_checkpoint, **p1_results}
+        p2_group_id, _ = await aq.submit_agent_group(
+            redis,
+            group_type="article",
+            context_data=context_data,
+            agents=p2_to_run,
+            prior_results=p2_prior,
+            fire_and_forget=True,
+        )
+        logger.info(
+            "P2 agent group submitted (fire-and-forget): %s agents=%s (group=%s)",
+            title[:50], p2_to_run, p2_group_id[:8],
         )
 
-    # Merge results back (worker already wrote per-agent checkpoints to Redis)
-    for aid, result_data in agent_results.items():
-        results["agents"][aid] = result_data
-
-    # Clean up per-agent checkpoint (all agents done)
-    try:
-        await redis.delete(f"nf:agent:checkpoint:{article_id}")
-    except Exception:
-        logger.debug("Failed to cleanup agent checkpoint for %s", article_id[:8])
+    # Checkpoint cleanup: only if no P2 group was submitted.
+    # P2 worker will clean up after it finishes.
+    if not p2_to_run:
+        try:
+            await redis.delete(checkpoint_key)
+        except Exception:
+            logger.debug("Failed to cleanup agent checkpoint for %s", article_id[:8])
 
     total_duration = (time.monotonic() - pipeline_start) * 1000
     results["pipeline_duration_ms"] = total_duration
+    if p2_group_id:
+        results["_p2_group_id"] = p2_group_id
 
-    total_tokens = sum(
-        r.get("tokens_used", 0) for r in agent_results.values()
+    p1_tokens = sum(
+        r.get("tokens_used", 0) for r in p1_results.values()
         if isinstance(r, dict) and r.get("success")
     )
-    successful = sum(1 for r in agent_results.values() if isinstance(r, dict) and r.get("success"))
-    failed = sum(1 for r in agent_results.values() if isinstance(r, dict) and not r.get("success"))
+    p1_ok = sum(1 for r in p1_results.values() if isinstance(r, dict) and r.get("success"))
+    p1_fail = sum(1 for r in p1_results.values() if isinstance(r, dict) and not r.get("success"))
 
     logger.info(
-        "Pipeline complete: %s | %d agents (%d ok, %d fail) | %d tokens | %.0fms",
-        title[:50], successful + failed, successful, failed, total_tokens, total_duration,
+        "Pipeline P1 complete: %s | %d agents (%d ok, %d fail) | %d tokens | %.0fms%s",
+        title[:50], p1_ok + p1_fail, p1_ok, p1_fail, p1_tokens, total_duration,
+        f" | P2 pending: {p2_to_run}" if p2_to_run else "",
     )
 
     await _report_progress("complete")

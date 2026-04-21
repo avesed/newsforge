@@ -189,3 +189,86 @@ async def finalize_merged_fields(
         )
 
     return update_values
+
+
+async def finalize_p2_merged_fields(
+    article_id: str,
+    agent_data: dict,
+    successful_ids: list[str],
+    session,
+) -> None:
+    """Merge P2 (low-priority) agent results into an already-finalized article.
+
+    Unlike ``finalize_merged_fields`` (called by consumer for P1 agents), this:
+    - Reads existing ``finance_metadata`` and merges additively (not replaces)
+    - Appends P2 agent IDs to ``agents_executed``
+    - Uses ``SELECT ... FOR UPDATE`` to prevent race conditions
+    - Per-agent columns (sentiment_score, sentiment_label) are already written
+      by ``_persist_and_emit`` during execution, so only merged fields need handling.
+    """
+    from sqlalchemy import select as sql_select, update as sql_update
+    from app.models.article import Article
+
+    # Read existing article with lock
+    result = await session.execute(
+        sql_select(Article).where(Article.id == article_id).with_for_update()
+    )
+    article = result.scalar_one_or_none()
+    if not article:
+        logger.warning("P2 finalize: article %s not found", article_id[:8])
+        return
+
+    # --- Merge finance_metadata contributions from P2 agents ---
+    finance_meta = dict(article.finance_metadata) if article.finance_metadata else {}
+
+    sentiment_result = agent_data.get("sentiment", {})
+    if isinstance(sentiment_result, dict) and sentiment_result.get("success"):
+        sd = sentiment_result.get("data", {})
+        if sd.get("finance_sentiment"):
+            finance_meta["sentiment_tag"] = sd["finance_sentiment"]
+        if sd.get("investment_summary"):
+            finance_meta["investment_summary"] = sd["investment_summary"]
+
+    # Impact scorer results
+    impact_result = agent_data.get("impact_scorer", {})
+    if isinstance(impact_result, dict) and impact_result.get("success"):
+        id_ = impact_result.get("data", {})
+        if id_.get("impact_score") is not None:
+            finance_meta["impact_score"] = id_["impact_score"]
+
+    # Build update dict
+    update_values: dict[str, Any] = {}
+
+    if finance_meta:
+        update_values["finance_metadata"] = finance_meta
+
+    # Append P2 agent IDs to agents_executed
+    existing_agents = list(article.agents_executed or [])
+    new_agents = [aid for aid in successful_ids if aid not in existing_agents]
+    if new_agents:
+        update_values["agents_executed"] = existing_agents + new_agents
+
+    # Update pipeline_metadata with P2 agent data
+    pipeline_meta = dict(article.pipeline_metadata) if article.pipeline_metadata else {}
+    p2_agents_meta = {}
+    for aid, result_data in agent_data.items():
+        if isinstance(result_data, dict):
+            p2_agents_meta[aid] = result_data
+    if p2_agents_meta:
+        agents_meta = pipeline_meta.get("agents", {})
+        agents_meta.update(p2_agents_meta)
+        pipeline_meta["agents"] = agents_meta
+        update_values["pipeline_metadata"] = pipeline_meta
+
+    if update_values:
+        await session.execute(
+            sql_update(Article)
+            .where(Article.id == article_id)
+            .values(**update_values)
+        )
+        logger.debug(
+            "finalize_p2_merged_fields %s: fields=%s new_agents=%s",
+            article_id[:8],
+            list(update_values.keys()),
+            new_agents,
+        )

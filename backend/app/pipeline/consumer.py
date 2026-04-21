@@ -104,6 +104,10 @@ class PipelineConsumer:
         )
         await self._circuit_breaker.load_state()
 
+        # Load agent priority override from Redis
+        from app.pipeline.agents.registry import load_priority_override_from_redis
+        await load_priority_override_from_redis()
+
         # Sync pause + concurrency from Redis BEFORE entering the main loop
         self._paused = await q.is_paused(redis)
         target = await q.get_concurrency(redis)
@@ -382,6 +386,8 @@ class PipelineConsumer:
                 "pipeline_metadata": {
                     "duration_ms": pipeline_results.get("pipeline_duration_ms"),
                     "agents": agent_data,
+                    **({"p2_group_id": pipeline_results["_p2_group_id"]}
+                       if pipeline_results.get("_p2_group_id") else {}),
                 },
             }
 

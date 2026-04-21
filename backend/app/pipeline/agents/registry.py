@@ -20,6 +20,28 @@ from app.pipeline.agents.base import AgentDefinition
 logger = logging.getLogger(__name__)
 
 _registry: AgentRegistry | None = None
+_priority_override: dict | None = None
+
+
+def set_priority_override(config: dict | None) -> None:
+    """Set in-process priority override (called by admin API)."""
+    global _priority_override
+    _priority_override = config
+
+
+async def load_priority_override_from_redis() -> None:
+    """Load priority override from Redis on startup. Called once."""
+    global _priority_override
+    try:
+        from app.db.redis import get_redis
+        redis = await get_redis()
+        raw = await redis.get("nf:pipeline:agent_priority")
+        if raw:
+            import json
+            _priority_override = json.loads(raw)
+            logger.info("Loaded agent priority override from Redis: %s", _priority_override)
+    except Exception:
+        logger.debug("No agent priority override in Redis")
 
 
 class AgentRegistry:
@@ -29,6 +51,7 @@ class AgentRegistry:
         self._agents: dict[str, AgentDefinition] = {}
         self._triggers: dict[str, Any] = {}
         self._routing_rules: dict[str, Any] = {}
+        self._priority_config: dict[str, Any] = {}
         self._load_triggers()
 
     def _load_triggers(self) -> None:
@@ -36,6 +59,11 @@ class AgentRegistry:
         config = load_pipeline_config()
         self._triggers = config.get("agent_triggers", {})
         self._routing_rules = config.get("routing_rules", {})
+        # Use runtime override if set, else fall back to pipeline.yml
+        if _priority_override is not None:
+            self._priority_config = _priority_override
+        else:
+            self._priority_config = config.get("agent_priority", {})
 
     def register(self, agent: AgentDefinition) -> None:
         """Register an agent definition."""
@@ -108,6 +136,71 @@ class AgentRegistry:
                 agent_ids.update(agents)
 
         return self._collect_agents(agent_ids)
+
+    def resolve_agents_tiered(
+        self,
+        categories: list[str],
+        value_score: int,
+        has_market_impact: bool,
+    ) -> tuple[list[str], list[str]]:
+        """Resolve agents split into P1 (high priority) and P2 (low priority).
+
+        P1 agents are user-facing (summarizer, translator, entity, tagger).
+        P2 agents are analytical (sentiment, scorer, embedder, etc.) and can
+        be disabled via ``agent_priority.p2_enabled: false`` for standalone
+        deployments.
+
+        Returns ``(p1_agent_ids, p2_agent_ids)`` preserving execution order.
+        If priority config is absent, all agents are returned as P1 (backward
+        compatible).
+        """
+        all_phases = self.resolve_agents(categories, value_score, has_market_impact)
+        if not all_phases:
+            return [], []
+
+        # Flatten to ordered list of agent IDs (phase order, then alphabetical)
+        all_ids: list[str] = []
+        for phase_num in sorted(all_phases.keys()):
+            for agent in all_phases[phase_num]:
+                all_ids.append(agent.agent_id)
+
+        p1_set = set(self._priority_config.get("p1_agents", []))
+        p2_enabled = self._priority_config.get("p2_enabled", True)
+
+        # No priority config → everything is P1 (backward compatible)
+        if not p1_set:
+            return all_ids, []
+
+        # Classify: agents in p1_set are P1; the rest are P2.
+        # Dependency rule: if an agent requires any P2 agent, it must be P2.
+        p2_ids_set: set[str] = set()
+        for aid in all_ids:
+            if aid not in p1_set:
+                p2_ids_set.add(aid)
+
+        # Enforce dependency constraint: P1 agent requiring a P2 agent → move to P2
+        changed = True
+        while changed:
+            changed = False
+            for aid in list(all_ids):
+                if aid in p2_ids_set:
+                    continue
+                agent = self._agents.get(aid)
+                if agent and any(dep in p2_ids_set for dep in agent.requires):
+                    p2_ids_set.add(aid)
+                    changed = True
+                    logger.info(
+                        "Agent '%s' moved to P2 (depends on P2 agent)", aid
+                    )
+
+        p1_ids = [aid for aid in all_ids if aid not in p2_ids_set]
+        p2_ids = [aid for aid in all_ids if aid in p2_ids_set]
+
+        if not p2_enabled:
+            logger.debug("P2 agents disabled by config, dropping: %s", p2_ids)
+            p2_ids = []
+
+        return p1_ids, p2_ids
 
     def _collect_agents(
         self, agent_ids: set[str] | list[str]
