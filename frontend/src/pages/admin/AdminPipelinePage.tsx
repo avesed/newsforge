@@ -587,6 +587,30 @@ function QueueMonitor() {
 
 /* ---------- Pipeline Events (existing) ---------- */
 
+/* Stage display names */
+const STAGE_LABELS: Record<string, string> = {
+  fetch: "抓取",
+  clean: "清洗",
+  classify: "分类",
+  "agent:summarizer": "摘要",
+  "agent:translator": "翻译",
+  "agent:entity": "实体",
+  "agent:finance_analyzer": "金融分析",
+  "agent:embedder": "嵌入",
+  // Legacy agent names
+  "agent:sentiment": "情感",
+  "agent:tagger": "标签",
+  "agent:deep_reporter": "深度报告",
+  "agent:impact_scorer": "打分",
+};
+
+function stageLabel(stage: string): string {
+  return STAGE_LABELS[stage] ?? stage.replace("agent:", "");
+}
+
+/* Hidden internal events */
+const HIDDEN_STAGES = new Set(["p2_complete", "p1_complete"]);
+
 function PipelineEvents() {
   const { t } = useTranslation();
   const [stageFilter, setStageFilter] = useState("all");
@@ -602,12 +626,26 @@ function PipelineEvents() {
     refetchInterval: 10_000,
   });
 
-  const filtered = (events ?? []).filter(
-    (e) => statusFilter === "all" || e.status === statusFilter,
-  );
+  const filtered = (events ?? []).filter((e) => {
+    if (HIDDEN_STAGES.has(e.stage)) return false;
+    if (statusFilter !== "all" && e.status !== statusFilter) return false;
+    return true;
+  });
 
   const eventColumns: Column<PipelineEventRaw>[] = [
-    { header: t("admin.stage"), accessor: (r) => r.stage },
+    {
+      header: t("admin.stage"),
+      accessor: (r) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${
+              r.stage.startsWith("agent:") ? "bg-blue-500" : "bg-amber-500"
+            }`}
+          />
+          {stageLabel(r.stage)}
+        </span>
+      ),
+    },
     {
       header: t("admin.status"),
       accessor: (r) => <StatusBadge status={r.status} />,
@@ -649,6 +687,9 @@ function PipelineEvents() {
     },
   ];
 
+  const selectClass =
+    "rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary";
+
   return (
     <div className="flex flex-col gap-4">
       {/* Filters */}
@@ -656,19 +697,26 @@ function PipelineEvents() {
         <select
           value={stageFilter}
           onChange={(e) => setStageFilter(e.target.value)}
-          className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+          className={selectClass}
         >
           <option value="all">{t("admin.allStages")}</option>
-          <option value="fetch">fetch</option>
-          <option value="clean">clean</option>
-          <option value="classify">classify</option>
-          <option value="analyze">analyze</option>
-          <option value="embed">embed</option>
+          <optgroup label="Pipeline">
+            <option value="fetch">抓取 (fetch)</option>
+            <option value="clean">清洗 (clean)</option>
+            <option value="classify">分类 (classify)</option>
+          </optgroup>
+          <optgroup label="Agents">
+            <option value="agent:summarizer">摘要</option>
+            <option value="agent:translator">翻译</option>
+            <option value="agent:entity">实体</option>
+            <option value="agent:finance_analyzer">金融分析</option>
+            <option value="agent:embedder">嵌入</option>
+          </optgroup>
         </select>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+          className={selectClass}
         >
           <option value="all">{t("admin.allStatuses")}</option>
           <option value="success">success</option>
@@ -682,14 +730,64 @@ function PipelineEvents() {
           <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
         </div>
       ) : (
-        <div className="rounded-lg border border-border bg-card">
-          <DataTable
-            columns={eventColumns}
-            data={filtered}
-            keyExtractor={(r) => r.id}
-            emptyMessage={t("admin.noEvents")}
-          />
-        </div>
+        <>
+          {/* Desktop: table */}
+          <div className="hidden rounded-lg border border-border bg-card sm:block">
+            <DataTable
+              columns={eventColumns}
+              data={filtered}
+              keyExtractor={(r) => r.id}
+              emptyMessage={t("admin.noEvents")}
+            />
+          </div>
+
+          {/* Mobile: cards */}
+          <div className="flex flex-col gap-2 sm:hidden">
+            {filtered.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">
+                {t("admin.noEvents")}
+              </div>
+            ) : (
+              filtered.map((e) => (
+                <div
+                  key={e.id}
+                  className="rounded-lg border border-border bg-card p-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+                      <span
+                        className={`inline-block h-2 w-2 rounded-full ${
+                          e.stage.startsWith("agent:")
+                            ? "bg-blue-500"
+                            : "bg-amber-500"
+                        }`}
+                      />
+                      {stageLabel(e.stage)}
+                    </span>
+                    <StatusBadge status={e.status} />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="font-mono">
+                      {e.article_id?.slice(0, 8) ?? "-"}
+                    </span>
+                    <span>{formatDuration(e.duration_ms)}</span>
+                    <span>
+                      {new Date(e.created_at).toLocaleString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                  </div>
+                  {e.error && (
+                    <div className="mt-1.5 truncate text-xs text-red-600 dark:text-red-400">
+                      {e.error}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </>
       )}
     </div>
   );
