@@ -50,7 +50,6 @@ agent_triggers:
     - finance
     - tech
     - politics
-    - world
 
 # Agent priority tiers — split agents into P1 (user-facing, fast) and P2 (analytical, async)
 # P1 agents complete before article is shown to user; P2 runs fire-and-forget afterward.
