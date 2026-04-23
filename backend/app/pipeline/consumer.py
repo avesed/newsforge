@@ -478,6 +478,16 @@ class PipelineConsumer:
         else:
             await q.enqueue_dead_letter(redis, article_data, error)
             await q.increment_metrics(redis, "dead_lettered", 1)
+            # Clear dedup key so the article can be re-polled or requeued later.
+            # Without this, the URL stays "seen" in Redis (24h TTL) AND the DB row
+            # blocks future inserts via unique constraint — article is lost forever.
+            url = article_data.get("url")
+            if url:
+                try:
+                    from app.pipeline.dedup import clear_dedup_keys
+                    await clear_dedup_keys(redis, url, article_data.get("title", ""))
+                except Exception:
+                    logger.warning("Failed to clear dedup keys for dead-lettered article: %s", url[:60], exc_info=True)
 
     async def _submit_story_group(self, redis) -> None:
         """Submit a story clustering agent group to the unified queue."""

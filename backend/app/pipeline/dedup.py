@@ -197,3 +197,25 @@ class DedupEngine:
         # Trim old entries
         cutoff = now - ttl
         await self._redis.zremrangebyscore("nf:dedup:titles", "-inf", cutoff)
+
+
+async def clear_dedup_keys(redis_client, url: str, title: str = "") -> int:
+    """Clear dedup keys for a URL (and optionally its title SimHash).
+
+    Used when an article enters the dead-letter queue so that it can be
+    re-polled or manually requeued without being blocked by stale dedup state.
+
+    Returns the number of keys removed.
+    """
+    removed = 0
+    norm_url = normalize_url(url)
+    url_key = f"nf:dedup:url:{hashlib.md5(norm_url.encode()).hexdigest()}"
+    removed += await redis_client.delete(url_key)
+
+    if title:
+        title_hash = compute_simhash(title)
+        removed += await redis_client.zrem("nf:dedup:titles", title_hash)
+
+    if removed:
+        logger.info("Cleared %d dedup keys for URL: %s", removed, norm_url[:80])
+    return removed

@@ -160,6 +160,74 @@ async def enqueue_dead_letter(redis: aioredis.Redis, article_data: dict, error: 
     logger.warning("Article moved to dead letter queue: %s (reason: %s)", article_data.get("url", "?")[:60], error[:200])
 
 
+async def requeue_dead_letters(redis: aioredis.Redis, limit: int = 0) -> int:
+    """Move articles from dead-letter queue back to the low-priority queue.
+
+    Resets retry_count so the article gets a fresh set of attempts.
+    Clears dedup keys to prevent poll-time blocking.
+
+    Args:
+        limit: Max articles to requeue (0 = all).
+
+    Returns number of articles requeued.
+    """
+    total = await redis.llen(QUEUE_DEAD_LETTER)
+    if total == 0:
+        return 0
+
+    count = limit if limit > 0 else total
+    requeued = 0
+
+    for _ in range(count):
+        raw = await redis.lpop(QUEUE_DEAD_LETTER)
+        if raw is None:
+            break
+        try:
+            article_data = json.loads(raw)
+            # Reset retry state
+            article_data.pop("retry_count", None)
+            article_data.pop("retry_at", None)
+            article_data.pop("dead_reason", None)
+            article_data.pop("dead_at", None)
+
+            # Clear dedup keys so the article is not blocked
+            url = article_data.get("url")
+            if url:
+                try:
+                    from app.pipeline.dedup import clear_dedup_keys
+                    await clear_dedup_keys(redis, url, article_data.get("title", ""))
+                except Exception:
+                    logger.warning("Failed to clear dedup for requeued article: %s", url[:60])
+
+            await enqueue_article(redis, article_data, priority="low")
+            requeued += 1
+
+            # Reset DB content_status from "failed" to "pending" so the article
+            # is treated as fresh by the pipeline.
+            article_id = article_data.get("article_id")
+            if article_id:
+                try:
+                    from sqlalchemy import update as sql_update
+                    from app.db.database import get_session_factory
+                    from app.models.article import Article
+                    factory = get_session_factory()
+                    async with factory() as session:
+                        await session.execute(
+                            sql_update(Article)
+                            .where(Article.id == article_id)
+                            .values(content_status="pending")
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.warning("Failed to reset content_status for requeued article: %s", article_id)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Skipping corrupt dead-letter entry")
+            continue
+
+    logger.info("Requeued %d/%d dead-letter articles", requeued, total)
+    return requeued
+
+
 async def update_health(redis: aioredis.Redis, **kwargs) -> None:
     """Update consumer health metrics."""
     await redis.hset(QUEUE_HEALTH, mapping={k: str(v) for k, v in kwargs.items()})

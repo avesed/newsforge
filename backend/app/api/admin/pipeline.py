@@ -390,12 +390,33 @@ async def circuit_breaker_status(admin: User = Depends(require_admin)):
 
 @router.post("/circuit-breaker/reset")
 async def reset_circuit_breaker(admin: User = Depends(require_admin)):
-    """Manually reset the circuit breaker."""
+    """Manually reset the circuit breaker and requeue dead-letter articles."""
     from app.pipeline.circuit_breaker import CircuitBreaker
     redis = await get_redis()
     cb = CircuitBreaker(redis)
     await cb.reset()
-    return {"state": "closed", "message": "Circuit breaker reset"}
+
+    # Auto-requeue dead-letter articles so they get a fresh chance
+    requeued = await q.requeue_dead_letters(redis)
+
+    return {
+        "state": "closed",
+        "message": f"Circuit breaker reset, {requeued} dead-letter articles requeued",
+        "requeued": requeued,
+    }
+
+
+@router.post("/dead-letter/requeue")
+async def requeue_dead_letters(
+    admin: User = Depends(require_admin),
+):
+    """Requeue all dead-letter articles for reprocessing.
+
+    Resets retry counts and clears dedup keys so articles get a fresh attempt.
+    """
+    redis = await get_redis()
+    requeued = await q.requeue_dead_letters(redis)
+    return {"requeued": requeued, "message": f"{requeued} articles requeued from dead letter"}
 
 
 class StoryBatchSizeRequest(CamelModel):

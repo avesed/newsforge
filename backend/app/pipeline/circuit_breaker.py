@@ -117,6 +117,15 @@ class CircuitBreaker:
         if prev_state != CLOSED:
             logger.info("Circuit breaker CLOSED (recovered from %s)", prev_state)
             await self._emit_event("circuit_breaker_closed")
+            # Auto-requeue dead-letter articles on recovery so they get retried
+            # now that the LLM is back.
+            try:
+                from app.pipeline.queue import requeue_dead_letters
+                requeued = await requeue_dead_letters(self._redis)
+                if requeued:
+                    logger.info("Auto-requeued %d dead-letter articles after circuit breaker recovery", requeued)
+            except Exception:
+                logger.warning("Failed to auto-requeue dead-letter articles on CB recovery", exc_info=True)
 
     async def record_failure(self) -> None:
         """Record a processing failure."""
