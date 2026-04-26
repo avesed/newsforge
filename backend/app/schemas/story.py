@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from app.schemas.article import ArticleResponse
+from app.schemas.article import ArticleSummaryResponse
 from app.schemas.base import CamelModel
 
 
@@ -26,5 +26,5 @@ class StoryResponse(CamelModel):
 
 
 class StoryDetailResponse(StoryResponse):
-    articles: list[ArticleResponse]
+    articles: list[ArticleSummaryResponse]
     timeline: list[dict] | None = None

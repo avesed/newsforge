@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import {
@@ -12,6 +12,7 @@ import {
   ChevronUp,
   Bot,
   Sparkles,
+  LogIn,
 } from "lucide-react";
 import * as Tabs from "@radix-ui/react-tabs";
 import { getArticle, getRelatedArticles } from "@/api/articles";
@@ -26,6 +27,7 @@ import { useReadingStore } from "@/stores/readingStore";
 import { sseFetch } from "@/api/sseFetch";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useSwipeBack } from "@/hooks/useSwipeBack";
+import { useAuthStore } from "@/stores/authStore";
 
 const TAB_ORDER = ["detailed", "fulltext", "analysis"] as const;
 
@@ -54,6 +56,7 @@ export default function ArticlePage() {
   const [readProgress, setReadProgress] = useState(0);
   const isMobile = useIsMobile();
   useSwipeBack();
+  const isAuthenticated = !!useAuthStore((s) => s.user);
   const [isTabSticky, setIsTabSticky] = useState(false);
   const heroSentinelRef = useRef<HTMLDivElement>(null);
   const tabsRef = useRef<(HTMLButtonElement | null)[]>([]);
@@ -136,7 +139,7 @@ export default function ArticlePage() {
 
   // Stream analysis when the analysis tab is selected
   const streamAnalysis = useCallback(() => {
-    if (!article?.id || analysisLoaded || streamingRef.current) return;
+    if (!article?.id || analysisLoaded || streamingRef.current || !isAuthenticated) return;
 
     streamingRef.current = true;
     setAnalysisLoading(true);
@@ -216,14 +219,7 @@ export default function ArticlePage() {
         setAnalysisLoading(false);
         streamingRef.current = false;
       });
-  }, [article?.id, analysisLoaded]);
-
-  // Trigger streaming when analysis tab is activated
-  useEffect(() => {
-    if (activeTab === "analysis" && !analysisLoaded && !streamingRef.current) {
-      streamAnalysis();
-    }
-  }, [activeTab, analysisLoaded, streamAnalysis]);
+  }, [article?.id, analysisLoaded, isAuthenticated]);
 
   // Reading progress bar scroll listener
   useEffect(() => {
@@ -658,6 +654,34 @@ export default function ArticlePage() {
                 <span className="text-sm text-muted-foreground">
                   {t("article.aiAnalyzing", "AI analyzing...")}
                 </span>
+              </div>
+            ) : !isAuthenticated ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                <LogIn className="h-8 w-8 text-muted-foreground/50" />
+                <p className="text-sm text-muted-foreground">
+                  {t("article.loginForAnalysis")}
+                </p>
+                <Link
+                  to="/login"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  <LogIn className="h-4 w-4" />
+                  {t("nav.login")}
+                </Link>
+              </div>
+            ) : !analysisLoaded && !analysisError ? (
+              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
+                <Sparkles className="h-8 w-8 text-primary/50" />
+                <p className="text-sm text-muted-foreground">
+                  {t("article.analysis")}
+                </p>
+                <button
+                  onClick={streamAnalysis}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  <Sparkles className="h-4 w-4" />
+                  {t("article.requestAnalysis")}
+                </button>
               </div>
             ) : null}
             {analysisLoading && analysisContent && (

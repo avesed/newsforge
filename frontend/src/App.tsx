@@ -19,6 +19,7 @@ const AdminConsumersPage = lazy(() => import("@/pages/admin/AdminConsumersPage")
 const AdminLLMPage = lazy(() => import("@/pages/admin/AdminLLMPage"));
 const AdminPipelinePage = lazy(() => import("@/pages/admin/AdminPipelinePage"));
 const AdminImportPage = lazy(() => import("@/pages/admin/AdminImportPage"));
+const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage"));
 const ReadingHistoryPage = lazy(() => import("@/pages/ReadingHistoryPage"));
 const StoriesPage = lazy(() => import("./pages/StoriesPage"));
 const StoryDetailPage = lazy(() => import("@/pages/StoryDetailPage"));
@@ -121,6 +122,14 @@ export default function App() {
               element={
                 <RequireAdmin>
                   <AdminPipelinePage />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <RequireAdmin>
+                  <AdminUsersPage />
                 </RequireAdmin>
               }
             />

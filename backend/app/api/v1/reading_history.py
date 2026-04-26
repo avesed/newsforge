@@ -16,7 +16,7 @@ from app.db.database import get_db
 from app.models.article import Article
 from app.models.reading_history import ReadingHistory
 from app.models.user import User
-from app.schemas.article import ArticleListResponse, ArticleResponse
+from app.schemas.article import ArticleListResponse, ArticleSummaryResponse
 from app.schemas.base import CamelModel
 
 router = APIRouter(prefix="/reading-history", tags=["reading-history"])
@@ -30,9 +30,9 @@ class ReadArticleIdsResponse(CamelModel):
     article_ids: list[str]
 
 
-def _to_response(article: Article) -> ArticleResponse:
-    """Convert ORM Article to response schema."""
-    return ArticleResponse(
+def _to_summary(article: Article) -> ArticleSummaryResponse:
+    """Convert ORM Article to lightweight summary response."""
+    return ArticleSummaryResponse(
         id=article.id,
         title=article.title,
         url=article.url,
@@ -47,11 +47,8 @@ def _to_response(article: Article) -> ArticleResponse:
         market_impact_hint=article.market_impact_hint,
         summary=article.summary,
         ai_summary=article.ai_summary,
-        detailed_summary=article.detailed_summary,
-        ai_analysis=article.ai_analysis,
-        full_text=article.full_text,
+        has_ai_analysis=bool(article.ai_analysis),
         title_zh=article.title_zh,
-        full_text_zh=article.full_text_zh,
         entities=article.entities if isinstance(article.entities, list) else None,
         primary_entity=article.primary_entity,
         primary_entity_type=article.primary_entity_type,
@@ -128,7 +125,7 @@ async def list_reading_history(
     articles = result.scalars().all()
 
     return ArticleListResponse(
-        articles=[_to_response(a) for a in articles],
+        articles=[_to_summary(a) for a in articles],
         total=total,
         page=page,
         page_size=page_size,

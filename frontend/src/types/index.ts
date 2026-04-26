@@ -27,6 +27,7 @@ export interface Article {
   detailedSummary: string | null;
   content: string | null;
   aiAnalysis: string | null;
+  hasAiAnalysis: boolean;
   fullText: string | null;
   titleZh: string | null;
   fullTextZh: string | null;

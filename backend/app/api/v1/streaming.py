@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_optional_user
+from app.core.auth import get_current_user
 from app.core.llm.gateway import get_llm_gateway
 from app.core.llm.types import ChatMessage, ChatRequest
 from app.db.database import get_db
@@ -54,7 +54,7 @@ DEEP_ANALYSIS_PROMPT = """你是一名资深金融分析师。基于以下新闻
 async def stream_analysis(
     article_id: UUID,
     force_new: bool = False,
-    user: User | None = Depends(get_optional_user),
+    user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Stream a deep analysis report for an article via SSE.

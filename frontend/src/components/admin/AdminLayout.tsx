@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { BarChart3, Rss, Key, Cpu, Zap, Shield, Import } from "lucide-react";
+import { BarChart3, Rss, Key, Cpu, Zap, Shield, Import, Users } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 interface NavItem {
@@ -17,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: "/admin/consumers", label: "admin.consumers", icon: Key },
   { path: "/admin/llm", label: "admin.llm", icon: Cpu },
   { path: "/admin/pipeline", label: "admin.pipeline", icon: Zap },
+  { path: "/admin/users", label: "admin.users", icon: Users },
   { path: "/admin/import", label: "admin.import.nav", icon: Import },
 ];
 

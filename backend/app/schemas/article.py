@@ -64,8 +64,64 @@ class ArticleResponse(CamelModel):
     created_at: datetime | None = None
 
 
+class ArticleSummaryResponse(CamelModel):
+    """Lightweight article for list endpoints — excludes large text fields."""
+    id: UUID
+    title: str
+    url: str
+    published_at: datetime | None = None
+    language: str | None = None
+
+    # Multi-label classification
+    primary_category: str | None = None
+    categories: list[str] | None = None
+    category_details: list[dict] | None = None
+    tags: list[str] | None = None
+
+    # Value & market impact
+    value_score: int | None = None
+    has_market_impact: bool = False
+    market_impact_hint: str | None = None
+
+    # Summaries (lightweight)
+    summary: str | None = None
+    ai_summary: str | None = None
+
+    # Boolean flag instead of full analysis text
+    has_ai_analysis: bool = False
+
+    # Translation (title only)
+    title_zh: str | None = None
+
+    # Entities & Sentiment
+    entities: list[dict] | None = None
+    primary_entity: str | None = None
+    primary_entity_type: str | None = None
+    sentiment_score: float | None = None
+    sentiment_label: str | None = None
+
+    # Finance metadata
+    finance_metadata: dict | None = None
+
+    # Pipeline
+    content_status: str = "pending"
+    processing_path: str | None = None
+    agents_executed: list[str] | None = None
+
+    # Story & event grouping
+    story_id: UUID | None = None
+    event_group_id: UUID | None = None
+
+    # Metadata
+    source_name: str | None = None
+    authors: list[str] | None = None
+    top_image: str | None = None
+    word_count: int | None = None
+    created_at: datetime | None = None
+
+
 class ArticleListResponse(CamelModel):
-    articles: list[ArticleResponse]
+    articles: list[ArticleSummaryResponse]
     total: int
     page: int
     page_size: int

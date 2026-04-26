@@ -29,7 +29,7 @@ from app.db.database import get_db
 from app.db.redis import get_redis
 from app.models.user import User
 from app.pipeline.queue import enqueue_article
-from app.schemas.article import ArticleResponse
+from app.schemas.article import ArticleSummaryResponse
 from app.schemas.base import CamelModel
 from app.sources.rss.google_news import build_search_url, resolve_urls_batch
 
@@ -46,7 +46,7 @@ RRF_K = 60
 # ---------------------------------------------------------------------------
 
 class SearchResponse(CamelModel):
-    articles: list[ArticleResponse]
+    articles: list[ArticleSummaryResponse]
     total: int
     page: int
     page_size: int
@@ -158,9 +158,9 @@ def _build_filter_clause(
     return clause_str, params
 
 
-def _to_response_from_row(row) -> ArticleResponse:
-    """Convert a raw SQL row (with named columns) to ArticleResponse."""
-    return ArticleResponse(
+def _to_response_from_row(row) -> ArticleSummaryResponse:
+    """Convert a raw SQL row (with named columns) to ArticleSummaryResponse."""
+    return ArticleSummaryResponse(
         id=row.id,
         title=row.title,
         url=row.url,
@@ -172,6 +172,7 @@ def _to_response_from_row(row) -> ArticleResponse:
         has_market_impact=row.has_market_impact,
         summary=row.summary,
         ai_summary=row.ai_summary,
+        has_ai_analysis=bool(getattr(row, "has_ai_analysis", False)),
         title_zh=getattr(row, "title_zh", None),
         sentiment_score=row.sentiment_score,
         sentiment_label=row.sentiment_label,
@@ -224,6 +225,7 @@ async def search_articles(
         SELECT a.id, a.title, a.title_zh, a.url, a.published_at, a.language,
                a.primary_category, a.categories, a.value_score,
                a.has_market_impact, a.summary, a.ai_summary,
+               a.ai_analysis IS NOT NULL AS has_ai_analysis,
                a.sentiment_score, a.sentiment_label, a.content_status,
                a.top_image, a.created_at,
                similarity(a.title, :q) + similarity(COALESCE(a.ai_summary, ''), :q) AS trgm_score
@@ -315,7 +317,7 @@ async def search_articles(
 
     # Fetch full article data for page results.
     # Articles from trigram path already have full data. For vector-only results, fetch from DB.
-    articles_out: list[ArticleResponse] = []
+    articles_out: list[ArticleSummaryResponse] = []
     missing_ids: list[UUID] = []
 
     # Map article_id to its position for ordering
@@ -335,6 +337,7 @@ async def search_articles(
             SELECT a.id, a.title, a.title_zh, a.url, a.published_at, a.language,
                    a.primary_category, a.categories, a.value_score,
                    a.has_market_impact, a.summary, a.ai_summary,
+                   a.ai_analysis IS NOT NULL AS has_ai_analysis,
                    a.sentiment_score, a.sentiment_label, a.content_status,
                    a.top_image, a.created_at
             FROM articles a

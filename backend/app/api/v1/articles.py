@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.models.article import Article
 from app.models.feed import Feed
-from app.schemas.article import ArticleListResponse, ArticleResponse
+from app.schemas.article import ArticleListResponse, ArticleResponse, ArticleSummaryResponse
 from app.services.cache_service import cache
 
 router = APIRouter(tags=["articles"])
@@ -75,7 +75,7 @@ async def list_articles(
     rows = result.all()
 
     response = ArticleListResponse(
-        articles=[_to_response(a, feed_title=ft) for a, ft in rows],
+        articles=[_to_summary(a, feed_title=ft) for a, ft in rows],
         total=total,
         page=page,
         page_size=page_size,
@@ -125,7 +125,7 @@ async def get_article(
     return response
 
 
-@router.get("/articles/{article_id}/related", response_model=list[ArticleResponse])
+@router.get("/articles/{article_id}/related", response_model=list[ArticleSummaryResponse])
 async def get_related_articles(
     article_id: UUID,
     limit: int = Query(6, ge=1, le=20),
@@ -273,7 +273,51 @@ async def get_related_articles(
                 related.append(a)
                 seen_ids.add(a.id)
 
-    return [_to_response(a) for a in related[:limit]]
+    return [_to_summary(a) for a in related[:limit]]
+
+
+def _to_summary(article: Article, feed_title: str | None = None) -> ArticleSummaryResponse:
+    """Convert ORM Article to lightweight summary for list endpoints."""
+    source_name = article.source_name
+    if not source_name:
+        if article.title and " - " in article.title:
+            source_name = article.title.rsplit(" - ", 1)[-1].strip()
+    if not source_name:
+        source_name = feed_title
+
+    return ArticleSummaryResponse(
+        id=article.id,
+        title=article.title,
+        url=article.url,
+        published_at=article.published_at,
+        language=article.language,
+        primary_category=article.primary_category,
+        categories=article.categories,
+        category_details=article.category_details if isinstance(article.category_details, list) else None,
+        tags=article.tags,
+        value_score=article.value_score,
+        has_market_impact=article.has_market_impact,
+        market_impact_hint=article.market_impact_hint,
+        summary=article.summary,
+        ai_summary=article.ai_summary,
+        has_ai_analysis=bool(article.ai_analysis),
+        title_zh=article.title_zh,
+        entities=article.entities if isinstance(article.entities, list) else None,
+        primary_entity=article.primary_entity,
+        primary_entity_type=article.primary_entity_type,
+        sentiment_score=article.sentiment_score,
+        sentiment_label=article.sentiment_label,
+        finance_metadata=article.finance_metadata,
+        content_status=article.content_status,
+        processing_path=article.processing_path,
+        agents_executed=article.agents_executed,
+        story_id=article.story_id,
+        source_name=source_name,
+        authors=article.authors if isinstance(article.authors, list) else None,
+        top_image=article.top_image,
+        word_count=article.word_count,
+        created_at=article.created_at,
+    )
 
 
 def _to_response(article: Article, feed_title: str | None = None) -> ArticleResponse:

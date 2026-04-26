@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, Check, CircleCheck, Clock, TrendingUp } from "lucide-react";
+import { BookOpen, Check, CircleCheck, Clock, Sparkles, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { cn, extractTitleSource } from "@/lib/utils";
@@ -38,17 +38,25 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
           {/* Gradient scrim */}
           <div className="article-hero-gradient absolute inset-0" />
 
-          {/* Category pill top-left */}
-          {article.categories?.[0] && (
-            <span
-              className="absolute left-3 top-3 rounded-full px-2.5 py-0.5 text-xs font-medium text-white/90 backdrop-blur-sm"
-              style={{
-                backgroundColor: `${CATEGORY_COLORS[article.categories[0] as CategorySlug] ?? CATEGORY_COLORS.other}80`,
-              }}
-            >
-              {t(`category.${article.categories[0]}`, article.categories[0])}
-            </span>
-          )}
+          {/* Category pill + AI indicator top-left */}
+          <div className="absolute left-3 top-3 flex items-center gap-1.5">
+            {article.categories?.[0] && (
+              <span
+                className="rounded-full px-2.5 py-0.5 text-xs font-medium text-white/90 backdrop-blur-sm"
+                style={{
+                  backgroundColor: `${CATEGORY_COLORS[article.categories[0] as CategorySlug] ?? CATEGORY_COLORS.other}80`,
+                }}
+              >
+                {t(`category.${article.categories[0]}`, article.categories[0])}
+              </span>
+            )}
+            {(article.hasAiAnalysis || article.aiAnalysis) && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/80 px-2 py-0.5 text-xs font-medium text-white/90 backdrop-blur-sm">
+                <Sparkles className="h-3 w-3" />
+                {t("article.aiTag")}
+              </span>
+            )}
+          </div>
 
           {/* Title overlaid on gradient */}
           <div className="absolute bottom-0 left-0 right-0 p-4">
@@ -191,6 +199,12 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
                 >
                   <BookOpen className="h-3 w-3" />
                   {t("stories.badge")}
+                </span>
+              )}
+              {(article.hasAiAnalysis || article.aiAnalysis) && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-[11px] font-medium text-violet-500">
+                  <Sparkles className="h-3 w-3" />
+                  {t("article.aiTag")}
                 </span>
               )}
             </div>

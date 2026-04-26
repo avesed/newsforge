@@ -137,7 +137,7 @@ async def get_story(
     )
     articles = articles_result.scalars().all()
 
-    from app.api.v1.articles import _to_response
+    from app.api.v1.articles import _to_summary
 
     return StoryDetailResponse(
         id=story.id,
@@ -153,6 +153,6 @@ async def get_story(
         sentiment_avg=story.sentiment_avg,
         representative_title=rep_title,
         representative_summary=rep_summary,
-        articles=[_to_response(a) for a in articles],
+        articles=[_to_summary(a) for a in articles],
         timeline=story.timeline,
     )

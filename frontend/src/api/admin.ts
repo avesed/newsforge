@@ -710,3 +710,37 @@ export interface LLMProviderRaw {
   apiKeyMasked: string;
   createdAt: string;
 }
+
+// --- Users ---
+
+export interface UserRaw {
+  id: number;
+  email: string;
+  displayName: string | null;
+  role: string;
+  locale: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getUsers() {
+  const res = await apiClient.get("/admin/users");
+  return res.data as UserRaw[];
+}
+
+export async function updateUser(
+  id: number,
+  data: { role?: string; isActive?: boolean; displayName?: string },
+) {
+  const res = await apiClient.patch(`/admin/users/${id}`, {
+    role: data.role,
+    is_active: data.isActive,
+    display_name: data.displayName,
+  });
+  return res.data as UserRaw;
+}
+
+export async function deleteUser(id: number) {
+  await apiClient.delete(`/admin/users/${id}`);
+}
