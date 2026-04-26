@@ -1,8 +1,8 @@
-"""Embedder agent — generates a single vector embedding per article.
+"""Embedding pipeline stage — generates a single vector embedding per article.
 
-Embeds a structured text combining title, summary, entities, sectors, and
-categories to capture both content semantics and structured metadata.
-This produces richer vectors for related-article recommendation and search.
+Embeds structured text combining title, summary, and cleaned content.
+Runs as a pipeline stage (between clean and classify), NOT as an agent.
+The embedding is used for semantic dedup and multi-source event grouping.
 """
 
 from __future__ import annotations
@@ -10,124 +10,103 @@ from __future__ import annotations
 import logging
 import time
 
-from app.core.llm.gateway import LLMGateway
+from app.core.config import load_pipeline_config
+from app.core.llm.gateway import LLMGateway, get_llm_gateway
 from app.core.llm.types import EmbedRequest
-from app.pipeline.agents.base import AgentContext, AgentDefinition, AgentResult
 
 logger = logging.getLogger(__name__)
 
-# Embedding dimensions — use reduced dimensions for efficiency
-EMBED_DIMENSIONS = 512
+
+def _get_embedding_dimensions() -> int:
+    """Read embedding_dimensions from pipeline.yml dedup config."""
+    config = load_pipeline_config()
+    return config.get("dedup", {}).get("embedding_dimensions", 512)
 
 
-def _build_embed_text(context: AgentContext) -> str:
-    """Build structured text for embedding from context + agent results.
+def build_embed_text(
+    title: str,
+    summary: str | None = None,
+    cleaned_text: str | None = None,
+) -> str:
+    """Build structured text for embedding from pre-agent context.
 
-    Combines: title, AI summary, financial entities, sectors, general
-    entities, and categories. Keeps it concise to stay within token limits.
+    Uses title + source summary + cleaned article text (truncated).
+    This runs before classification/agents, so no AI summary or entities.
     """
-    parts: list[str] = []
+    parts: list[str] = [title]
 
-    # Title (always present)
-    parts.append(context.title)
-
-    # AI summary from summarizer > source summary
-    ai_summary = None
-    brief_result = context.agent_results.get("summarizer")
-    if brief_result and brief_result.success:
-        ai_summary = brief_result.data.get("ai_summary")
-    summary = ai_summary or context.summary or ""
     if summary:
         parts.append(summary)
 
-    # Financial entities + sectors from finance_analyzer
-    fa_result = context.agent_results.get("finance_analyzer")
-    if fa_result and fa_result.success:
-        fa_data = fa_result.data
-        fin_entities = fa_data.get("financial_entities", [])
-        if fin_entities:
-            names = [e["name"] for e in fin_entities if e.get("name")]
-            if names:
-                parts.append("相关公司: " + ", ".join(names))
-        sectors = fa_data.get("sectors", [])
-        if sectors:
-            parts.append("板块: " + ", ".join(sectors))
-
-    # General entities from entity agent
-    entity_result = context.agent_results.get("entity")
-    if entity_result and entity_result.success:
-        entities = entity_result.data.get("entities", [])
-        # Only add person-type entities not already covered by finance_analyzer
-        person_names = [
-            e["name"] for e in entities
-            if e.get("type") == "person" and e.get("name")
-        ]
-        if person_names:
-            parts.append("关键人物: " + ", ".join(person_names[:5]))
-
-    # Categories
-    if context.categories:
-        parts.append("分类: " + ", ".join(context.categories))
+    if cleaned_text:
+        # Truncate to ~2000 chars to stay within token limits
+        parts.append(cleaned_text[:2000])
 
     return "\n".join(parts)
 
 
-class EmbedderAgent(AgentDefinition):
-    """Generate a single vector embedding from structured article content."""
+async def generate_embedding(
+    title: str,
+    summary: str | None = None,
+    cleaned_text: str | None = None,
+    llm: LLMGateway | None = None,
+) -> dict:
+    """Generate embedding for an article.
 
-    agent_id = "embedder"
-    name = "向量嵌入"
-    description = "基于摘要+实体+板块+分类生成向量嵌入"
-    phase = 3  # Post-processing phase — runs after all other agents
-    requires = []
-    input_fields = ["title", "ai_summary"]
-    output_fields = ["chunks", "embeddings"]
+    Returns dict with:
+        - success: bool
+        - embedding: list[float] | None
+        - embed_text: str
+        - tokens_used: int
+        - duration_ms: float
+        - model: str
+        - error: str | None
+    """
+    start = time.monotonic()
+    dimensions = _get_embedding_dimensions()
 
-    async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
-        start = time.monotonic()
+    embed_text = build_embed_text(title, summary, cleaned_text)
+    if not embed_text.strip():
+        return {
+            "success": False,
+            "embedding": None,
+            "embed_text": "",
+            "tokens_used": 0,
+            "duration_ms": (time.monotonic() - start) * 1000,
+            "model": "unknown",
+            "error": "No text available for embedding",
+        }
 
-        embed_text = _build_embed_text(context)
+    if llm is None:
+        llm = get_llm_gateway()
 
-        if not embed_text.strip():
-            duration = (time.monotonic() - start) * 1000
-            return AgentResult(
-                agent_id=self.agent_id,
-                success=False,
-                data={"chunks": [], "embeddings": [], "chunk_count": 0},
-                duration_ms=duration,
-                error="No text available for embedding",
-            )
-
-        try:
-            embed_request = EmbedRequest(
-                texts=[embed_text],
-                dimensions=EMBED_DIMENSIONS,
-            )
-            embed_response = await llm.embed(embed_request)
-            embeddings = embed_response.embeddings
-            tokens_used = embed_response.usage.total_tokens
-        except Exception as e:
-            duration = (time.monotonic() - start) * 1000
-            logger.exception("Embedding generation failed for article %s", context.article_id)
-            return AgentResult(
-                agent_id=self.agent_id,
-                success=False,
-                data={"chunks": [embed_text], "embeddings": [], "chunk_count": 1},
-                duration_ms=duration,
-                error=f"Embedding failed: {e!s}"[:500],
-            )
-
-        duration = (time.monotonic() - start) * 1000
-
-        return AgentResult(
-            agent_id=self.agent_id,
-            success=True,
-            data={
-                "chunks": [embed_text],
-                "embeddings": embeddings,
-                "chunk_count": 1,
-                "embedding_dim": len(embeddings[0]) if embeddings else 0,
-            },
-            duration_ms=duration,
-            tokens_used=tokens_used,
+    try:
+        response = await llm.embed(
+            EmbedRequest(texts=[embed_text], dimensions=dimensions)
         )
+        embedding = response.embeddings[0] if response.embeddings else None
+        tokens_used = response.usage.total_tokens
+        model = response.model
+    except Exception as e:
+        duration = (time.monotonic() - start) * 1000
+        logger.exception("Embedding generation failed")
+        return {
+            "success": False,
+            "embedding": None,
+            "embed_text": embed_text,
+            "tokens_used": 0,
+            "duration_ms": duration,
+            "model": "unknown",
+            "error": f"Embedding failed: {e!s}"[:500],
+        }
+
+    duration = (time.monotonic() - start) * 1000
+    return {
+        "success": True,
+        "embedding": embedding,
+        "embed_text": embed_text,
+        "tokens_used": tokens_used,
+        "duration_ms": duration,
+        "model": model,
+        "error": None,
+    }

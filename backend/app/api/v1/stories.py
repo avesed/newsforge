@@ -85,7 +85,7 @@ async def list_stories(
 async def trending_stories(
     db: AsyncSession = Depends(get_db),
 ):
-    """Top stories by article_count in the last 24 hours."""
+    """Top stories by most recently updated (newest activity first)."""
     logger.debug("trending_stories requested")
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
@@ -96,7 +96,7 @@ async def trending_stories(
             NewsStory.is_active == True,  # noqa: E712
             NewsStory.last_updated_at >= cutoff,
         )
-        .order_by(NewsStory.article_count.desc())
+        .order_by(NewsStory.last_updated_at.desc())
         .limit(10)
     )
 

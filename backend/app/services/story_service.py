@@ -67,26 +67,23 @@ async def get_articles_for_story_matching(article_ids: list[str]) -> list[dict]:
                 "embedding": None,
             }
 
-        # Extract embeddings from pipeline_metadata JSON
-        # Path: pipeline_metadata -> agents -> embedder -> data -> embeddings[0]
+        # Extract embeddings from document_embeddings table
         emb_result = await session.execute(
             text("""
-                SELECT id::text,
-                       pipeline_metadata->'agents'->'embedder'->'data'->'embeddings'->0 AS embedding
-                FROM articles
-                WHERE id = ANY(:ids)
-                  AND pipeline_metadata->'agents'->'embedder'->'data'->'embeddings'->0 IS NOT NULL
+                SELECT source_id, embedding::text
+                FROM document_embeddings
+                WHERE source_type = 'article'
+                  AND source_id = ANY(:ids)
+                  AND chunk_index = 0
             """),
-            {"ids": [uuid.UUID(aid) for aid in articles_by_id.keys()]},
+            {"ids": list(articles_by_id.keys())},
         )
         for emb_row in emb_result.fetchall():
-            sid = str(emb_row.id)
+            sid = emb_row.source_id
             if sid in articles_by_id and emb_row.embedding is not None:
                 try:
-                    emb = emb_row.embedding
-                    if isinstance(emb, str):
-                        import json as _json
-                        emb = _json.loads(emb)
+                    import json as _json
+                    emb = _json.loads(emb_row.embedding)
                     if isinstance(emb, list) and len(emb) > 0:
                         articles_by_id[sid]["embedding"] = emb
                 except (ValueError, TypeError) as e:

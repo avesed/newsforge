@@ -24,7 +24,7 @@ class DocumentEmbedding(Base):
 
     chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_index: Mapped[int] = mapped_column(Integer, default=0)
-    embedding = mapped_column(Vector(1536))  # OpenAI text-embedding-3-small dimension
+    embedding = mapped_column(Vector(512))  # Reduced dimensions for efficiency
 
     model: Mapped[str] = mapped_column(String(100), default="unknown")
     token_count: Mapped[int | None] = mapped_column(Integer)

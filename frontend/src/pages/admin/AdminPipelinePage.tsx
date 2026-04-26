@@ -591,13 +591,15 @@ function QueueMonitor() {
 const STAGE_LABELS: Record<string, string> = {
   fetch: "抓取",
   clean: "清洗",
+  embedding: "向量化",
+  semantic_dedup: "语义去重",
   classify: "分类",
   "agent:summarizer": "摘要",
   "agent:translator": "翻译",
   "agent:entity": "实体",
   "agent:finance_analyzer": "金融分析",
-  "agent:embedder": "嵌入",
   // Legacy agent names
+  "agent:embedder": "嵌入",
   "agent:sentiment": "情感",
   "agent:tagger": "标签",
   "agent:deep_reporter": "深度报告",
@@ -703,6 +705,8 @@ function PipelineEvents() {
           <optgroup label="Pipeline">
             <option value="fetch">抓取 (fetch)</option>
             <option value="clean">清洗 (clean)</option>
+            <option value="embedding">向量化 (embedding)</option>
+            <option value="semantic_dedup">语义去重 (semantic_dedup)</option>
             <option value="classify">分类 (classify)</option>
           </optgroup>
           <optgroup label="Agents">
@@ -710,7 +714,6 @@ function PipelineEvents() {
             <option value="agent:translator">翻译</option>
             <option value="agent:entity">实体</option>
             <option value="agent:finance_analyzer">金融分析</option>
-            <option value="agent:embedder">嵌入</option>
           </optgroup>
         </select>
         <select

@@ -156,9 +156,10 @@ class AgentRegistry:
         """Resolve agents split into P1 (high priority) and P2 (low priority).
 
         P1 agents are user-facing (summarizer, translator, entity).
-        P2 agents are analytical (finance_analyzer, embedder) and can
-        be disabled via ``agent_priority.p2_enabled: false`` for standalone
-        deployments (except embedder, which always runs).
+        P2 agents are analytical (finance_analyzer) and can be disabled
+        via ``agent_priority.p2_enabled: false`` for standalone deployments.
+
+        Note: embedder is no longer an agent — it runs as a pipeline stage.
 
         Returns ``(p1_agent_ids, p2_agent_ids)`` preserving execution order.
         If priority config is absent, all agents are returned as P1 (backward
@@ -209,14 +210,9 @@ class AgentRegistry:
         p2_ids = [aid for aid in all_ids if aid in p2_ids_set]
 
         if not p2_enabled:
-            # When P2 is disabled, keep embedder — move it to P1 tail
-            kept = [aid for aid in p2_ids if aid == "embedder"]
-            dropped = [aid for aid in p2_ids if aid != "embedder"]
+            dropped = p2_ids
             if dropped:
                 logger.debug("P2 agents disabled by config, dropping: %s", dropped)
-            if kept:
-                logger.debug("P2 disabled but keeping embedder in P1: %s", kept)
-                p1_ids = p1_ids + kept
             p2_ids = []
 
         return p1_ids, p2_ids
@@ -292,18 +288,20 @@ def reset_agent_registry() -> None:
 
 
 def _register_all_agents(registry: AgentRegistry) -> None:
-    """Register all built-in agents."""
+    """Register all built-in agents.
+
+    Note: embedder is no longer an agent — it runs as a pipeline stage
+    (between clean and classify) for semantic dedup + event grouping.
+    """
     from app.pipeline.agents.summarizer import UnifiedSummarizerAgent
     from app.pipeline.agents.entity import UnifiedEntityAgent
     from app.pipeline.agents.finance_analyzer import FinanceAnalyzerAgent
-    from app.pipeline.agents.embedder import EmbedderAgent
     from app.pipeline.agents.translator import TranslatorAgent
 
     agents: list[AgentDefinition] = [
         UnifiedSummarizerAgent(),
         UnifiedEntityAgent(),
         FinanceAnalyzerAgent(),
-        EmbedderAgent(),
         TranslatorAgent(),
     ]
 

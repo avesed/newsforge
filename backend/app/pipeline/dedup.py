@@ -1,9 +1,12 @@
-"""Dedup engine — URL normalization + SimHash content fingerprinting + language detection.
+"""Dedup engine — URL normalization + SimHash + semantic embedding dedup.
 
-Three-layer dedup (before LLM classification to save cost):
-1. URL normalization + exact match
-2. Title SimHash (Hamming distance <= 3 within 24h window)
-3. Content MinHash (Jaccard > 0.7, if full text available)
+Four-layer dedup (before LLM classification to save cost):
+1. URL normalization + exact match (poll time)
+2. Title SimHash — Hamming distance <= 3 within 24h window (poll time)
+3. Resolved URL check — after content fetch (pipeline time)
+4. Semantic embedding dedup — cosine similarity on document_embeddings (pipeline time)
+   - > semantic_threshold (0.95)  → duplicate, discard
+   - > event_group_threshold (0.88) → same event, link via event_group_id
 
 Language detection is applied after dedup check (only for non-duplicate articles).
 """
@@ -13,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import uuid
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from lingua import Language, LanguageDetectorBuilder
@@ -197,6 +201,115 @@ class DedupEngine:
         # Trim old entries
         cutoff = now - ttl
         await self._redis.zremrangebyscore("nf:dedup:titles", "-inf", cutoff)
+
+
+async def semantic_dedup(
+    article_id: str,
+    embedding: list[float],
+    *,
+    dedup_threshold: float = 0.95,
+    group_threshold: float = 0.88,
+    window_hours: int = 12,
+) -> dict:
+    """Check semantic similarity against recent article embeddings.
+
+    Returns dict with:
+        - action: "duplicate" | "group" | "new"
+        - matched_article_id: str | None (the article that matched)
+        - event_group_id: str | None (the group to join, or new UUID)
+        - similarity: float | None (cosine similarity of best match)
+    """
+    from app.db.database import get_session_factory
+    from sqlalchemy import text
+
+    factory = get_session_factory()
+    async with factory() as session:
+        hours_int = int(window_hours)
+        result = await session.execute(
+            text(f"""
+                SELECT de.source_id,
+                       1 - (de.embedding <=> CAST(:vec AS vector)) AS similarity,
+                       a.event_group_id
+                FROM document_embeddings de
+                JOIN articles a ON CAST(a.id AS text) = de.source_id
+                WHERE de.source_type = 'article'
+                  AND de.source_id != :self_id
+                  AND de.created_at > NOW() - INTERVAL '{hours_int} hours'
+                  AND de.embedding IS NOT NULL
+                ORDER BY de.embedding <=> CAST(:vec AS vector)
+                LIMIT 1
+            """),
+            {"vec": str(embedding), "self_id": str(article_id)},
+        )
+        row = result.one_or_none()
+
+    if row is None or row.similarity < group_threshold:
+        # No similar article — new event
+        return {
+            "action": "new",
+            "matched_article_id": None,
+            "event_group_id": str(uuid.uuid4()),
+            "similarity": row.similarity if row else None,
+        }
+
+    if row.similarity >= dedup_threshold:
+        # Near-identical — duplicate
+        return {
+            "action": "duplicate",
+            "matched_article_id": row.source_id,
+            "event_group_id": str(row.event_group_id) if row.event_group_id else None,
+            "similarity": round(row.similarity, 4),
+        }
+
+    # Same event, different source — group together
+    group_id = str(row.event_group_id) if row.event_group_id else row.source_id
+    return {
+        "action": "group",
+        "matched_article_id": row.source_id,
+        "event_group_id": group_id,
+        "similarity": round(row.similarity, 4),
+    }
+
+
+async def store_embedding(
+    article_id: str,
+    embedding: list[float],
+    chunk_text: str,
+    model: str = "unknown",
+    token_count: int | None = None,
+) -> None:
+    """Store article embedding in document_embeddings table."""
+    from app.db.database import get_session_factory
+    from sqlalchemy import text
+
+    factory = get_session_factory()
+    async with factory() as session:
+        # Upsert: delete old embedding for this article, insert new
+        await session.execute(
+            text(
+                "DELETE FROM document_embeddings "
+                "WHERE source_type = 'article' AND source_id = :sid"
+            ),
+            {"sid": str(article_id)},
+        )
+        await session.execute(
+            text("""
+                INSERT INTO document_embeddings
+                    (id, source_type, source_id, chunk_text, chunk_index, embedding, model, token_count)
+                VALUES
+                    (gen_random_uuid(), 'article', :sid, :chunk_text, 0, CAST(:vec AS vector), :model, :tokens)
+            """),
+            {
+                "sid": str(article_id),
+                "chunk_text": chunk_text[:2000],
+                "vec": str(embedding),
+                "model": model,
+                "tokens": token_count,
+            },
+        )
+        await session.commit()
+
+    logger.debug("Stored embedding for article %s (%d dims)", article_id[:8], len(embedding))
 
 
 async def clear_dedup_keys(redis_client, url: str, title: str = "") -> int:

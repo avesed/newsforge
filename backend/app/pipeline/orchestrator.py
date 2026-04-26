@@ -548,6 +548,132 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if not checkpoint or "cleaned_text" not in (checkpoint or {}):
         article_data["_checkpoint"]["cleaned_text"] = cleaned_text
 
+    # --- Phase 2b: Embedding + Semantic Dedup ---
+    await _report_progress("embedding")
+    from app.pipeline.agents.embedder import generate_embedding
+    from app.pipeline.dedup import semantic_dedup, store_embedding
+
+    embed_source_text = cleaned_text or (content.full_text if content else None)
+
+    embedding_from_checkpoint = bool(checkpoint and "embedding" in checkpoint)
+    if embedding_from_checkpoint:
+        embedding_result = checkpoint["embedding"]
+        logger.info("Restored embedding from checkpoint")
+    else:
+        embedding_result = await generate_embedding(
+            title=title,
+            summary=summary,
+            cleaned_text=embed_source_text,
+        )
+        embed_status = "success" if embedding_result["success"] else "error"
+        await record_event(
+            article_id, "embedding", embed_status,
+            duration_ms=embedding_result["duration_ms"],
+            metadata={
+                "tokens": embedding_result["tokens_used"],
+                "model": embedding_result["model"],
+            },
+            error=embedding_result.get("error"),
+        )
+
+    results["embedding"] = embedding_result
+
+    # Save embedding to checkpoint (without the full vector to keep payload small)
+    if not checkpoint or "embedding" not in (checkpoint or {}):
+        checkpoint_embed = {k: v for k, v in embedding_result.items() if k != "embedding"}
+        checkpoint_embed["_has_embedding"] = bool(embedding_result.get("embedding"))
+        article_data["_checkpoint"]["embedding"] = checkpoint_embed
+
+    # Semantic dedup: compare embedding against recent articles
+    # Skip if restored from checkpoint (dedup was already done on first run)
+    if not embedding_from_checkpoint and embedding_result.get("success") and embedding_result.get("embedding"):
+        embed_vec = embedding_result["embedding"]
+
+        # Store embedding in document_embeddings table first
+        try:
+            await store_embedding(
+                article_id,
+                embed_vec,
+                chunk_text=embedding_result.get("embed_text", "")[:2000],
+                model=embedding_result.get("model", "unknown"),
+                token_count=embedding_result.get("tokens_used"),
+            )
+        except Exception:
+            logger.warning("Failed to store embedding for %s", article_id[:8], exc_info=True)
+
+        # Read dedup thresholds from config
+        pipeline_config = load_pipeline_config()
+        dedup_config = pipeline_config.get("dedup", {})
+        dedup_threshold = dedup_config.get("semantic_threshold", 0.95)
+        group_threshold = dedup_config.get("event_group_threshold", 0.88)
+        semantic_window = dedup_config.get("semantic_window_hours", 12)
+
+        try:
+            dedup_result = await semantic_dedup(
+                article_id,
+                embed_vec,
+                dedup_threshold=dedup_threshold,
+                group_threshold=group_threshold,
+                window_hours=semantic_window,
+            )
+        except Exception:
+            logger.warning("Semantic dedup failed for %s, proceeding", article_id[:8], exc_info=True)
+            dedup_result = {"action": "new", "event_group_id": str(uuid.uuid4()), "similarity": None}
+
+        results["semantic_dedup"] = dedup_result
+
+        if dedup_result["action"] == "duplicate":
+            logger.info(
+                "Semantic dedup: article %s is duplicate of %s (cosine=%.4f)",
+                article_id[:8], dedup_result["matched_article_id"][:8],
+                dedup_result["similarity"],
+            )
+            await record_event(
+                article_id, "semantic_dedup", "duplicate",
+                metadata={
+                    "matched_article_id": dedup_result["matched_article_id"],
+                    "similarity": dedup_result["similarity"],
+                },
+            )
+            from sqlalchemy import update as sql_update
+            from app.models.article import Article
+            async with get_session_factory()() as dup_session:
+                await dup_session.execute(
+                    sql_update(Article)
+                    .where(Article.id == article_id)
+                    .values(content_status="duplicate")
+                )
+                await dup_session.commit()
+            results["duplicate"] = True
+            results["pipeline_duration_ms"] = (time.monotonic() - pipeline_start) * 1000
+            return results
+
+        elif dedup_result["action"] == "group":
+            logger.info(
+                "Semantic dedup: article %s grouped with %s (cosine=%.4f)",
+                article_id[:8], dedup_result["matched_article_id"][:8],
+                dedup_result["similarity"],
+            )
+            await record_event(
+                article_id, "semantic_dedup", "grouped",
+                metadata={
+                    "matched_article_id": dedup_result["matched_article_id"],
+                    "event_group_id": dedup_result["event_group_id"],
+                    "similarity": dedup_result["similarity"],
+                },
+            )
+            results["event_group_id"] = dedup_result["event_group_id"]
+        else:
+            # New event
+            await record_event(
+                article_id, "semantic_dedup", "new",
+                metadata={"similarity": dedup_result.get("similarity")},
+            )
+            results["event_group_id"] = dedup_result["event_group_id"]
+    elif not embedding_from_checkpoint:
+        # Embedding failed (not a checkpoint restore) — assign new group
+        results["event_group_id"] = str(uuid.uuid4())
+
     # --- Phase 3: Classification (uses cleaned full text to prime prompt cache) ---
     await _report_progress("classify")
 

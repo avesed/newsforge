@@ -60,6 +60,9 @@ class Article(Base):
         UUID(as_uuid=True), ForeignKey("news_stories.id", ondelete="SET NULL"), index=True, nullable=True
     )
 
+    # Multi-source event grouping — articles about the same event share this ID
+    event_group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), index=True)
+
     # === Value & Market Impact (from classifier, replaces L1 3-agent scoring) ===
     value_score: Mapped[int | None] = mapped_column(Integer)  # 0-100, information value
     value_reason: Mapped[str | None] = mapped_column(String(200))

@@ -361,11 +361,14 @@ class PipelineConsumer:
 
             # Build update values (aligned with Article model from migration 002)
             cat_slugs = [c.get("slug") for c in classification.get("categories", [])]
+            event_group_id = pipeline_results.get("event_group_id")
             update_values: dict = {
                 # Update URL to resolved real URL if Google News was deferred
                 **({"url": url_updated_to} if url_updated_to else {}),
                 # Store cleaned full text if available
                 **({"full_text": cleaned_text} if cleaned_text else {}),
+                # Event group for multi-source dedup
+                **({"event_group_id": event_group_id} if event_group_id else {}),
                 "primary_category_id": category_id,
                 "primary_category": primary_cat,
                 "categories": cat_slugs,

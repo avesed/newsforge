@@ -19,7 +19,7 @@ from app.core.llm.types import EmbedRequest
 
 logger = logging.getLogger(__name__)
 
-# Default reduced dimensions for search queries (matches embedder agent)
+# Default reduced dimensions for search queries (matches pipeline embedding stage)
 SEARCH_DIMENSIONS = 512
 
 
