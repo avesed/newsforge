@@ -450,17 +450,25 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
         dedup = DedupEngine(redis)
         seen, norm_real = await dedup.is_url_seen(final_url)
         existing_id = None
-        if not seen:
-            # Redis dedup key may have expired (TTL 24h) — fall back to DB
-            async with get_session_factory()() as chk_session:
-                existing_id = (await chk_session.execute(
-                    sql_select(Article.id).where(
-                        Article.url == norm_real,
-                        Article.id != article_id,
-                    )
-                )).scalar_one_or_none()
-            if existing_id:
-                seen = True
+        # Always verify against DB — Redis key alone is not enough
+        # (key may exist from a prior fetch of the same batch, but
+        #  the article itself may not have been stored yet)
+        async with get_session_factory()() as chk_session:
+            existing_id = (await chk_session.execute(
+                sql_select(Article.id).where(
+                    Article.url == norm_real,
+                    Article.id != article_id,
+                )
+            )).scalar_one_or_none()
+        if existing_id:
+            seen = True
+        elif seen:
+            # Redis says seen but DB has no matching article — false positive
+            logger.info(
+                "Redis dedup key exists but no DB article for %s, allowing",
+                norm_real[:80],
+            )
+            seen = False
 
         if seen and is_live_update_url(norm_real):
             # Live-update pages change content while keeping the same URL.
