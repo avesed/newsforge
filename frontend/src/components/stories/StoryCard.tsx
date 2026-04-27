@@ -1,9 +1,10 @@
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { BookOpen, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { BookOpen, TrendingUp, TrendingDown, Minus, Clock } from "lucide-react";
 import type { NewsStory } from "@/api/stories";
 import { CategoryTag } from "@/components/category/CategoryTag";
 import { StatusBadge } from "./StatusBadge";
+import { timeAgo } from "@/lib/timeAgo";
 
 function SentimentIndicator({ value }: { value: number | null }) {
   if (value == null) return null;
@@ -37,7 +38,8 @@ interface StoryCardProps {
 }
 
 export function StoryCard({ story }: StoryCardProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language === "zh" ? "zh" : "en";
 
   return (
     <Link
@@ -51,7 +53,12 @@ export function StoryCard({ story }: StoryCardProps) {
           <h4 className="line-clamp-1 text-sm font-semibold text-foreground">
             {story.title}
           </h4>
-          <div className="mt-1 flex items-center gap-2 flex-wrap">
+          {story.representativeSummary && (
+            <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+              {story.representativeSummary}
+            </p>
+          )}
+          <div className="mt-1.5 flex items-center gap-2 flex-wrap">
             <StatusBadge status={story.status} />
             <span className="text-xs text-muted-foreground">
               {story.articleCount} {t("stories.articles")}
@@ -60,6 +67,12 @@ export function StoryCard({ story }: StoryCardProps) {
               <CategoryTag key={cat} category={cat} size="sm" />
             ))}
             <SentimentIndicator value={story.sentimentAvg} />
+            {story.lastUpdatedAt && (
+              <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
+                <Clock className="h-3 w-3" />
+                {timeAgo(story.lastUpdatedAt, locale)}
+              </span>
+            )}
           </div>
           {story.keyEntities && story.keyEntities.length > 0 && (
             <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">

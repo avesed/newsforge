@@ -9,20 +9,27 @@ import { cn } from "@/lib/utils";
 
 function StoriesPageSkeleton() {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+    <div
+      className="grid gap-3"
+      style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}
+    >
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="rounded-lg border border-border bg-card p-3">
           <div className="flex items-start gap-2">
             <Skeleton className="mt-0.5 h-4 w-4 flex-shrink-0 rounded" />
             <div className="min-w-0 flex-1">
               <Skeleton className="h-4 w-full" />
+              <Skeleton className="mt-1 h-3 w-full" />
+              <Skeleton className="mt-0.5 h-3 w-3/4" />
               <div className="mt-1.5 flex items-center gap-2">
                 <Skeleton className="h-3 w-16" />
                 <Skeleton className="h-3 w-12" />
+                <Skeleton className="h-4 w-10 rounded-full" />
+                <Skeleton className="h-3 w-14" />
               </div>
-              <div className="mt-1.5 flex items-center gap-2">
-                <Skeleton className="h-4 w-10 rounded-full" />
-                <Skeleton className="h-4 w-10 rounded-full" />
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <Skeleton className="h-4 w-14 rounded" />
+                <Skeleton className="h-4 w-14 rounded" />
               </div>
             </div>
           </div>
@@ -102,7 +109,10 @@ export default function StoriesPage() {
       )}
 
       {stories && stories.length > 0 && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div
+          className="grid gap-3"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" }}
+        >
           {stories.map((story) => (
             <StoryCard key={story.id} story={story} />
           ))}
