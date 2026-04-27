@@ -46,8 +46,17 @@ export interface Article {
   processingPath: string | null;
   agentsExecuted: string[] | null;
   storyId: string | null;
+  eventGroupId: string | null;
+  eventGroupArticles: EventGroupItem[] | null;
   publishedAt: string;
   createdAt: string;
+}
+
+export interface EventGroupItem {
+  id: string;
+  title: string;
+  sourceName: string | null;
+  publishedAt: string | null;
 }
 
 export interface Feed {

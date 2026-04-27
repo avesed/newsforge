@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.models.article import Article
 from app.models.feed import Feed
-from app.schemas.article import ArticleListResponse, ArticleResponse, ArticleSummaryResponse
+from app.schemas.article import ArticleListResponse, ArticleResponse, ArticleSummaryResponse, EventGroupItem
 from app.services.cache_service import cache
 
 router = APIRouter(tags=["articles"])
@@ -79,8 +79,49 @@ async def list_articles(
     result = await db.execute(query)
     rows = result.all()
 
+    summaries = [_to_summary(a, feed_title=ft) for a, ft in rows]
+
+    # Populate event_group_articles for articles that have an event group
+    group_ids = {
+        s.event_group_id for s in summaries
+        if s.event_group_id is not None
+    }
+    if group_ids:
+        article_ids_in_page = {s.id for s in summaries}
+        group_rows = await db.execute(
+            select(
+                Article.id, Article.title, Article.source_name,
+                Article.published_at, Article.event_group_id,
+            )
+            .where(
+                Article.event_group_id.in_(group_ids),
+                Article.content_status.notin_(["duplicate", "superseded"]),
+            )
+            .order_by(Article.published_at.desc().nullslast())
+        )
+        # Build group_id -> list of sibling items (exclude the article itself)
+        group_map: dict[str, list[EventGroupItem]] = {}
+        for r in group_rows.all():
+            gid = str(r.event_group_id)
+            item = EventGroupItem(
+                id=r.id, title=r.title,
+                source_name=r.source_name,
+                published_at=r.published_at,
+            )
+            group_map.setdefault(gid, []).append(item)
+
+        for s in summaries:
+            if s.event_group_id:
+                gid = str(s.event_group_id)
+                siblings = [
+                    item for item in group_map.get(gid, [])
+                    if item.id != s.id
+                ]
+                if siblings:
+                    s.event_group_articles = siblings
+
     response = ArticleListResponse(
-        articles=[_to_summary(a, feed_title=ft) for a, ft in rows],
+        articles=summaries,
         total=total,
         page=page,
         page_size=page_size,
@@ -317,6 +358,7 @@ def _to_summary(article: Article, feed_title: str | None = None) -> ArticleSumma
         processing_path=article.processing_path,
         agents_executed=article.agents_executed,
         story_id=article.story_id,
+        event_group_id=article.event_group_id,
         source_name=source_name,
         authors=article.authors if isinstance(article.authors, list) else None,
         top_image=article.top_image,
@@ -365,6 +407,7 @@ def _to_response(article: Article, feed_title: str | None = None) -> ArticleResp
         processing_path=article.processing_path,
         agents_executed=article.agents_executed,
         story_id=article.story_id,
+        event_group_id=article.event_group_id,
         source_name=source_name,
         authors=article.authors if isinstance(article.authors, list) else None,
         top_image=article.top_image,

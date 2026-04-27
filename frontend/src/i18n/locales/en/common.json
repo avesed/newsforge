@@ -52,6 +52,7 @@
     "requestAnalysis": "Request AI Analysis",
     "loginForAnalysis": "Sign in to use AI analysis",
     "aiTag": "AI",
+    "eventGroup": "{{count}} more sources",
     "valueScore": "Value",
     "marketImpact": "Market Impact",
     "agentsExecuted": "Processing agents"

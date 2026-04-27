@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { BookOpen, Check, CircleCheck, Clock, Sparkles, TrendingUp } from "lucide-react";
+import { BookOpen, Check, ChevronDown, ChevronUp, CircleCheck, Clock, Newspaper, Sparkles, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { CATEGORY_COLORS, type CategorySlug } from "@/types";
 import { cn, extractTitleSource } from "@/lib/utils";
@@ -19,6 +20,8 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
   const navigate = useNavigate();
   const extracted = extractTitleSource(article.title);
   const displaySource = extracted.source || article.sourceName || "Unknown";
+  const [groupExpanded, setGroupExpanded] = useState(false);
+  const groupArticles = article.eventGroupArticles;
 
   /* ── Hero variant ─────────────────────────────────────────── */
   if (variant === "hero" && article.imageUrl) {
@@ -148,6 +151,40 @@ export function ArticleCard({ article, isRead, onMarkRead, variant = "standard" 
               <p className="text-sm text-muted-foreground line-clamp-2 mb-2">
                 {article.aiSummary ?? article.summary}
               </p>
+            )}
+
+            {/* Event group: other sources reporting the same event */}
+            {groupArticles && groupArticles.length > 0 && (
+              <div className="mb-2">
+                <button
+                  type="button"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setGroupExpanded(!groupExpanded); }}
+                  className="inline-flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors"
+                >
+                  <Newspaper className="h-3 w-3" />
+                  {t("article.eventGroup", { count: groupArticles.length })}
+                  {groupExpanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                </button>
+                {groupExpanded && (
+                  <div className="mt-1.5 space-y-1 pl-4 border-l-2 border-blue-500/20">
+                    {groupArticles.map((ga) => {
+                      const gaSource = extractTitleSource(ga.title);
+                      return (
+                        <Link
+                          key={ga.id}
+                          to={`/article/${ga.id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="block text-xs text-muted-foreground hover:text-foreground transition-colors truncate"
+                        >
+                          <span className="font-medium text-foreground/70">{gaSource.source || ga.sourceName || "Unknown"}</span>
+                          {" "}
+                          {gaSource.title || ga.title}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Tags row: categories + sentiment */}

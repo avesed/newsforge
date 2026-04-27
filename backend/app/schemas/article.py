@@ -111,6 +111,7 @@ class ArticleSummaryResponse(CamelModel):
     # Story & event grouping
     story_id: UUID | None = None
     event_group_id: UUID | None = None
+    event_group_articles: list["EventGroupItem"] | None = None
 
     # Metadata
     source_name: str | None = None
@@ -118,6 +119,14 @@ class ArticleSummaryResponse(CamelModel):
     top_image: str | None = None
     word_count: int | None = None
     created_at: datetime | None = None
+
+
+class EventGroupItem(CamelModel):
+    """Minimal info for a sibling article in the same event group."""
+    id: UUID
+    title: str
+    source_name: str | None = None
+    published_at: datetime | None = None
 
 
 class ArticleListResponse(CamelModel):

@@ -51,6 +51,7 @@
     "requestAnalysis": "请求 AI 分析",
     "loginForAnalysis": "登录后可使用 AI 分析",
     "aiTag": "AI",
+    "eventGroup": "另有 {{count}} 家媒体报道",
     "markRead": "标记已读",
     "valueScore": "价值",
     "marketImpact": "市场影响",
