@@ -39,12 +39,17 @@ async def list_articles(
         if cached:
             return ArticleListResponse(**cached)
 
+    # Exclude duplicates and superseded unless explicitly filtering by status
+    hide_dupes = not status
+    base_filter = Article.content_status.notin_(["duplicate", "superseded"]) if hide_dupes else True
+
     query = (
         select(Article, Feed.title.label("feed_title"))
         .outerjoin(Feed, Article.feed_id == Feed.id)
+        .where(base_filter)
         .order_by(Article.published_at.desc().nullslast(), Article.created_at.desc())
     )
-    count_query = select(func.count(Article.id))
+    count_query = select(func.count(Article.id)).where(base_filter)
 
     # Filters
     if category:
