@@ -5,6 +5,7 @@ Supports /news/{category} pattern (user requirement #3).
 
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,11 +27,33 @@ async def list_articles(
     language: str | None = Query(None, description="Filter by language (en, zh)"),
     status: str | None = Query(None, description="Filter by content_status"),
     q: str | None = Query(None, description="Search in title"),
+    since: datetime | None = Query(
+        None,
+        description=(
+            "Incremental streaming mode: return articles whose created_at is "
+            "strictly greater than this timestamp, ordered by created_at desc. "
+            "Bypasses cache and pagination."
+        ),
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
     """List articles with optional filtering."""
+    # Streaming mode: incremental fetch of newly ingested articles since a timestamp.
+    # Used by the live feed on the frontend to merge new items into the top of the list
+    # without reloading. Bypasses cache (timestamp would never hit) and uses created_at
+    # ordering so the result is "what arrived after the client last saw".
+    if since is not None:
+        return await _list_articles_since(
+            since=since,
+            category=category,
+            language=language,
+            status=status,
+            limit=min(page_size, 50),
+            db=db,
+        )
+
     # Cache only simple category+page queries (no search/language/status filters)
     cache_key = None
     if not language and not status and not q:
@@ -41,7 +64,13 @@ async def list_articles(
 
     # Exclude duplicates and superseded unless explicitly filtering by status
     hide_dupes = not status
-    base_filter = Article.content_status.notin_(["duplicate", "superseded"]) if hide_dupes else True
+    # Hide pending articles too — those haven't been classified/enriched yet,
+    # so they show up unstyled (no category, no summary) and clutter the feed.
+    base_filter = (
+        Article.content_status.notin_(["duplicate", "superseded", "pending"])
+        if hide_dupes
+        else True
+    )
 
     query = (
         select(Article, Feed.title.label("feed_title"))
@@ -95,7 +124,7 @@ async def list_articles(
             )
             .where(
                 Article.event_group_id.in_(group_ids),
-                Article.content_status.notin_(["duplicate", "superseded"]),
+                Article.content_status.notin_(["duplicate", "superseded", "pending"]),
             )
             .order_by(Article.published_at.desc().nullslast())
         )
@@ -320,6 +349,57 @@ async def get_related_articles(
                 seen_ids.add(a.id)
 
     return [_to_summary(a) for a in related[:limit]]
+
+
+async def _list_articles_since(
+    *,
+    since: datetime,
+    category: str | None,
+    language: str | None,
+    status: str | None,
+    limit: int,
+    db: AsyncSession,
+) -> ArticleListResponse:
+    """Return articles ingested strictly after `since`, newest first.
+
+    Mirrors the filters of the main list endpoint but skips pagination, cache,
+    and event-group enrichment — this path is meant to be cheap and called on
+    a polling interval.
+    """
+    hide_dupes = not status
+    base_filter = (
+        Article.content_status.notin_(["duplicate", "superseded", "pending"])
+        if hide_dupes
+        else True
+    )
+
+    query = (
+        select(Article, Feed.title.label("feed_title"))
+        .outerjoin(Feed, Article.feed_id == Feed.id)
+        .where(base_filter)
+        .where(Article.created_at > since)
+        .order_by(Article.created_at.desc())
+        .limit(limit)
+    )
+
+    if category:
+        query = query.where(Article.primary_category == category)
+    if language:
+        query = query.where(Article.language == language)
+    if status:
+        query = query.where(Article.content_status == status)
+
+    result = await db.execute(query)
+    rows = result.all()
+    summaries = [_to_summary(a, feed_title=ft) for a, ft in rows]
+
+    return ArticleListResponse(
+        articles=summaries,
+        total=len(summaries),
+        page=1,
+        page_size=limit,
+        has_more=False,
+    )
 
 
 def _to_summary(article: Article, feed_title: str | None = None) -> ArticleSummaryResponse:

@@ -77,6 +77,15 @@
   animation: fadeInUp 180ms ease-out both;
 }
 
+/* Live feed: new article slides in from the top of the list */
+@keyframes streamIn {
+  from { opacity: 0; transform: translateY(-12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-stream-in {
+  animation: streamIn 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
 /* Tab content fade-in */
 [data-radix-tabs-content] {
   animation: fadeIn 150ms ease-out;

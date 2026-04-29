@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Loader2, Newspaper } from "lucide-react";
@@ -9,7 +9,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { useReadHistory } from "@/hooks/useReadHistory";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { usePullToRefresh } from "@/hooks/usePullToRefresh";
+import { useStreamingFeed } from "@/hooks/useStreamingFeed";
 import { cn } from "@/lib/utils";
+
+const STREAM_ANIMATION_MS = 400;
 
 interface ArticleListProps {
   category?: string | undefined;
@@ -46,6 +49,30 @@ export function ArticleList({ category }: ArticleListProps) {
   const { containerRef, indicatorRef, isRefreshing } = usePullToRefresh({
     onRefresh: async () => {
       await queryClient.invalidateQueries({ queryKey: ["articles", category] });
+    },
+  });
+
+  // Tracks article IDs that just streamed in, so we can play the slide-in
+  // animation exactly once. Cleared after the animation finishes.
+  const [streamedIds, setStreamedIds] = useState<Set<string>>(() => new Set());
+
+  useStreamingFeed({
+    category,
+    enabled: !isLoading && !isError,
+    onNewArticles: (ids) => {
+      setStreamedIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.add(id));
+        return next;
+      });
+      window.setTimeout(() => {
+        setStreamedIds((prev) => {
+          if (prev.size === 0) return prev;
+          const next = new Set(prev);
+          ids.forEach((id) => next.delete(id));
+          return next;
+        });
+      }, STREAM_ANIMATION_MS);
     },
   });
 
@@ -118,13 +145,24 @@ export function ArticleList({ category }: ArticleListProps) {
       <div className="flex flex-col">
         {articles.map((article, index) => {
           const isHero = isMobile && index === 0 && !!article.imageUrl;
-          // Skip stagger animation on hero card — it has its own visual presence
-          const shouldAnimate = index < animateUpTo && !isHero;
+          const isStreamed = streamedIds.has(article.id);
+          // Skip stagger animation on hero card — it has its own visual presence.
+          // Streamed-in items get their own slide-in that overrides the stagger.
+          const shouldStagger = !isStreamed && index < animateUpTo && !isHero;
+          const animClass = isStreamed
+            ? "animate-stream-in"
+            : shouldStagger
+            ? "animate-stagger-item"
+            : undefined;
           return (
             <div
               key={article.id}
-              className={shouldAnimate ? "animate-stagger-item" : undefined}
-              style={shouldAnimate ? { animationDelay: `${Math.min(index * 50, 500)}ms` } : undefined}
+              className={animClass}
+              style={
+                shouldStagger
+                  ? { animationDelay: `${Math.min(index * 50, 500)}ms` }
+                  : undefined
+              }
             >
               <ArticleCard
                 article={article}

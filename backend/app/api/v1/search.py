@@ -110,7 +110,11 @@ def _build_filter_clause(
     Returns (clause_str, params_dict). clause_str starts with "AND ..." if any
     filters are present, or is empty string.
     """
-    clauses: list[str] = []
+    # Always hide unprocessed / removed articles from search results — pending
+    # rows have no category/summary and look broken in result cards.
+    clauses: list[str] = [
+        "a.content_status NOT IN ('duplicate', 'superseded', 'pending')"
+    ]
     params: dict = {}
 
     if category:

@@ -20,6 +20,26 @@ export async function getArticles(
   return response.data;
 }
 
+/**
+ * Fetch articles whose `created_at` is strictly after `since` (ISO timestamp).
+ * Server returns up to `limit` results ordered by created_at desc, no pagination.
+ * Used by the live streaming feed to merge newly ingested items into the top.
+ */
+export async function getNewArticlesSince(
+  since: string,
+  category?: string,
+  limit: number = 30
+): Promise<PaginatedResponse<Article>> {
+  const params: Record<string, string | number> = { since, page_size: limit };
+  if (category) {
+    params.category = category;
+  }
+  const response = await apiClient.get<PaginatedResponse<Article>>("/news", {
+    params,
+  });
+  return response.data;
+}
+
 export async function getArticle(id: string): Promise<Article> {
   const response = await apiClient.get<Article>(`/articles/${id}`);
   return response.data;
