@@ -89,7 +89,8 @@ class Article(Base):
 
     # === Entity Extraction (merged from all entity_* agents) ===
     entities: Mapped[dict | None] = mapped_column(JSONB)
-    # [{name, type: "person"|"org"|"location"|"stock"|"index"|"macro"|"product"|"event", confidence}]
+    # [{name, type: "person"|"organization"|"country"|"location"|"event", confidence}]
+    # Legacy values may still exist: "org", "stock", "index", "macro", "product"
     primary_entity: Mapped[str | None] = mapped_column(String(100))
     primary_entity_type: Mapped[str | None] = mapped_column(String(20))
 

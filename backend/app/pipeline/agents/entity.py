@@ -52,32 +52,62 @@ _VAGUE_NAME_RE = re.compile(
 )
 
 _TASK_PROMPT = """\
-请从上述新闻中提取关键实体，分为以下4类。
+请从上述新闻中提取关键实体，按以下 5 种类型分别归类。**type 字段必须严格区分，不得混用。**
 
-## 实体类型
+## 实体类型（严格区分，不可混用）
 
-### 1. person（人物/组织/国家）
-包含具体的人、公司、政府机构、国际组织、国家等。
+### 1. person（自然人，仅限真实个人）
+**仅限真实存在的人类个人**：政治家、企业家、明星、运动员、科学家、记者主角等。
+公司、机构、组织、国家、品牌、产品**绝对不允许**归入 person。
 - name: 正式全名
   - 英文人名写全名："Donald Trump"（非 "Trump"）、"Jerome Powell"（非 "Powell"）
-  - 公司写正式名："Amazon"、"比亚迪"、"Alphabet"
-  - 政府机构："美联储"、"SEC"、"中国证监会"
-  - 国家直接写国名："美国"、"中国"
-- role: 一句话说明在本文中的角色（如 "美联储主席候选人"、"发布GLP-1减肥产品的公司"）
+  - 中文人名保留原名："马斯克"、"任正非"
+- role: 一句话说明在本文中的身份和角色（如 "美联储主席候选人"、"特斯拉CEO"）
 - confidence: 0.5-1.0
 
-### 2. location（地点）
-具体的城市、地区、场所（国家归入 person 类）。
-- name: 地名
-- context: 在新闻中的作用（一句话）
+### 2. organization（组织/机构）
+公司、政府部门、监管机构、国际组织、NGO、学术机构、体育俱乐部、宗教团体等。
+**国家不归入此类**（见 country）；具体人不归入此类（见 person）。
+- name: 正式名称
+  - 公司："Amazon"、"比亚迪"、"Alphabet"、"NASA"、"Apple"
+  - 政府/监管："美联储"、"SEC"、"中国证监会"、"欧盟委员会"
+  - 国际组织："联合国"、"WHO"、"OPEC"
+- role: 一句话说明在本文中的角色（如 "发布GLP-1减肥产品的公司"、"加征关税的监管方"）
 - confidence: 0.5-1.0
 
-### 3. event（事件）
+### 3. country（国家/主权实体）
+具体国家或具有主权地位的实体。
+- name: 国家名（"美国"、"中国"、"日本"、"俄罗斯"、"欧盟"——欧盟作为政治联合体可计入）
+- role: 一句话说明在本文中的角色（如 "贸易战发起方"、"政策受影响国"）
+- confidence: 0.5-1.0
+
+### 4. location（具体地点）
+具体的城市、地区、场所、地理特征（**国家不归入此类，归入 country**）。
+- name: 地名（"硅谷"、"华尔街"、"乌克兰东部"、"东京"、"白宫"）
+- role: 一句话说明在新闻中的作用
+- confidence: 0.5-1.0
+
+### 5. event（事件）
 文中的核心事件或动作。
 - name: 简洁事件名（如 "Amazon推出GLP-1减肥服务"、"美联储主席提名僵局"）
 - event_type: 政策/人事/产品/冲突/灾害/赛事/财报/并购/法律/其他
 - significance: high/medium/low
 - confidence: 0.5-1.0
+
+## type 字段判定速查表（避免误标）
+| 实体例子 | 正确 type | 错误 type |
+|---|---|---|
+| Donald Trump、马斯克、Sam Altman | person | ❌ organization |
+| Apple、NASA、美联储、Goldman Sachs | organization | ❌ person |
+| 美国、中国、日本、俄罗斯、欧盟 | country | ❌ person、❌ organization |
+| 硅谷、华尔街、白宫、东京 | location | ❌ country、❌ organization |
+| iPhone发布会、特朗普就职、巴以冲突升级 | event | ❌ organization |
+
+**典型错误（必须避免）**：
+- ❌ Apple → person   ✅ Apple → organization
+- ❌ NASA → person    ✅ NASA → organization
+- ❌ 美国 → person     ✅ 美国 → country
+- ❌ 美联储 → country  ✅ 美联储 → organization
 
 ## 严格规则（防止幻觉）
 1. **只提取文中明确出现的信息**——不要推测、补充、联想
@@ -95,13 +125,14 @@ _TASK_PROMPT = """\
 文章的主要市场归属：cn/hk/us 之一。不涉及特定市场则输出 null。
 
 ## 输出示例
-新闻: "Amazon launches GLP-1 weight loss program via Amazon One Medical, competing with Hims & Hers..."
+新闻: "Amazon launches GLP-1 weight loss program via Amazon One Medical in the US, competing with Hims & Hers..."
 ```json
 {
   "entities": [
-    {"type": "person", "name": "Amazon", "role": "推出GLP-1减肥服务的公司", "confidence": 0.95},
-    {"type": "person", "name": "Hims & Hers Health", "role": "竞争对手", "confidence": 0.7},
-    {"type": "person", "name": "Novo Nordisk", "role": "GLP-1药物供应商", "confidence": 0.7},
+    {"type": "organization", "name": "Amazon", "role": "推出GLP-1减肥服务的公司", "confidence": 0.95},
+    {"type": "organization", "name": "Hims & Hers Health", "role": "竞争对手", "confidence": 0.7},
+    {"type": "organization", "name": "Novo Nordisk", "role": "GLP-1药物供应商", "confidence": 0.7},
+    {"type": "country", "name": "美国", "role": "服务上线市场", "confidence": 0.8},
     {"type": "event", "name": "Amazon推出GLP-1减肥服务", "event_type": "产品", "significance": "high", "confidence": 0.95}
   ],
   "primary_market": "us"
@@ -111,7 +142,7 @@ _TASK_PROMPT = """\
 输出严格JSON：
 {"entities": [...], "primary_market": "..."}"""
 
-_VALID_TYPES = {"person", "location", "event"}
+_VALID_TYPES = {"person", "organization", "country", "location", "event"}
 _VALID_RELATIONS = {"direct", "supply_chain", "competitor", "beneficiary", "subsidiary"}
 
 
@@ -142,9 +173,15 @@ def _validate_entity(entity: dict) -> dict | None:
         return None
 
     etype = entity.get("type", "")
-    # Map legacy types to new types
-    if etype in ("org", "stock", "index", "macro", "country"):
-        etype = "person"
+    # Map legacy types to new typed buckets
+    _LEGACY_TYPE_MAP = {
+        "org": "organization",
+        "stock": "organization",
+        "index": "organization",
+        "macro": "organization",
+    }
+    if etype in _LEGACY_TYPE_MAP:
+        etype = _LEGACY_TYPE_MAP[etype]
         entity["type"] = etype
     elif etype in ("product", "time"):
         return None  # Drop these entity types
@@ -158,8 +195,8 @@ def _validate_entity(entity: dict) -> dict | None:
     name = name.strip()
     entity["name"] = name
 
-    # Filter out news sources (only for person type)
-    if etype == "person" and _is_news_source(name):
+    # Filter out news sources from organization/person buckets
+    if etype in ("person", "organization") and _is_news_source(name):
         return None
 
     # Filter out vague / generic names
