@@ -19,7 +19,11 @@ export interface NewsStory {
 
 export interface TimelineEntry {
   date: string;
-  summary: string;
+  summary?: string | null;
+  title?: string | null;
+  articleId?: string | null;
+  article_id?: string | null;
+  kind?: "event" | "article" | string | null;
 }
 
 export interface StoryDetail extends NewsStory {

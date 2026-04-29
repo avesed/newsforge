@@ -6,6 +6,8 @@ Provides batch story matching support:
 - create_story / link_article_to_story: DB mutation helpers
 - update_story_embedding: recompute story embedding from linked articles
 - deactivate_stale_stories: housekeeping
+- append_timeline_entry / apply_refresh_result / find_stories_needing_refresh:
+  ongoing-storyline maintenance support
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.core.config import load_pipeline_config
 from app.db.database import get_session_factory
 from app.models.article import Article
 from app.models.news_story import NewsStory, StoryArticle
@@ -24,6 +27,19 @@ from app.models.news_story import NewsStory, StoryArticle
 logger = logging.getLogger(__name__)
 
 STORY_WINDOW_HOURS = 72  # Only match active stories updated within this window
+
+
+def _refresh_config() -> dict:
+    """Load story_refresh config from pipeline.yml with sane defaults."""
+    cfg = load_pipeline_config().get("story_refresh", {}) or {}
+    return {
+        "threshold_articles": int(cfg.get("threshold_articles", 3)),
+        "fallback_interval_hours": int(cfg.get("fallback_interval_hours", 1)),
+        "fallback_min_age_hours": int(cfg.get("fallback_min_age_hours", 6)),
+        "max_per_run": int(cfg.get("max_per_run", 20)),
+        "max_articles_in_prompt": int(cfg.get("max_articles_in_prompt", 12)),
+        "timeline_max_entries": int(cfg.get("timeline_max_entries", 30)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +320,17 @@ async def link_article_to_story(
     article_id: str,
     matched_by: str = "direct",
     confidence: float | None = None,
-) -> None:
-    """Link an article to an existing story."""
+) -> bool:
+    """Link an article to an existing story.
+
+    Atomically increments article_count + articles_since_refresh, appends a
+    lightweight timeline entry from the article, and returns True if the
+    accumulated count crossed the refresh threshold (caller should enqueue
+    a story_refresh group).
+    """
     factory = get_session_factory()
+    cfg = _refresh_config()
+    needs_refresh = False
 
     async with factory() as session:
         # Upsert into story_articles (ignore if already linked)
@@ -320,25 +344,301 @@ async def link_article_to_story(
 
         # Only update count if a new row was actually inserted
         if result.rowcount > 0:
+            # Fetch article snapshot for timeline append
+            art_row = (await session.execute(
+                select(Article.title, Article.published_at, Article.ai_summary, Article.summary)
+                .where(Article.id == article_id)
+            )).one_or_none()
+
             await session.execute(
                 update(NewsStory)
                 .where(NewsStory.id == story_id)
                 .values(
                     article_count=NewsStory.article_count + 1,
+                    articles_since_refresh=NewsStory.articles_since_refresh + 1,
                     last_updated_at=func.now(),
                 )
             )
+
+            # Append lightweight timeline entry (no LLM)
+            if art_row is not None:
+                ts = art_row.published_at or datetime.now(timezone.utc)
+                entry = {
+                    "date": ts.isoformat(),
+                    "article_id": article_id,
+                    "title": (art_row.title or "")[:200],
+                    "summary": ((art_row.ai_summary or art_row.summary) or "")[:240],
+                    "kind": "article",
+                }
+                max_entries = cfg["timeline_max_entries"]
+                # JSONB[] timeline: ensure array, append, trim to last N
+                await session.execute(
+                    text("""
+                        UPDATE news_stories
+                        SET timeline = (
+                            CASE
+                                WHEN timeline IS NULL OR jsonb_typeof(timeline) <> 'array'
+                                    THEN jsonb_build_array(CAST(:entry AS jsonb))
+                                ELSE timeline || jsonb_build_array(CAST(:entry AS jsonb))
+                            END
+                        )
+                        WHERE id = :sid
+                    """),
+                    {"sid": story_id, "entry": __import__("json").dumps(entry)},
+                )
+                # Trim to last N entries to keep payload bounded
+                await session.execute(
+                    text("""
+                        UPDATE news_stories
+                        SET timeline = (
+                            SELECT jsonb_agg(elem)
+                            FROM (
+                                SELECT elem
+                                FROM jsonb_array_elements(timeline) WITH ORDINALITY AS t(elem, ord)
+                                ORDER BY ord DESC
+                                LIMIT :max_entries
+                            ) trimmed
+                        )
+                        WHERE id = :sid
+                          AND jsonb_array_length(timeline) > :max_entries
+                    """),
+                    {"sid": story_id, "max_entries": max_entries},
+                )
 
             # Update article's story_id
             await session.execute(
                 update(Article).where(Article.id == article_id).values(story_id=story_id)
             )
 
+            # Check if refresh threshold reached (read post-update value)
+            since = (await session.execute(
+                select(NewsStory.articles_since_refresh).where(NewsStory.id == story_id)
+            )).scalar_one_or_none()
+
             await session.commit()
             logger.info("Linked article %s to story %s (by=%s)", article_id[:8], story_id[:8], matched_by)
+
+            if since is not None and since >= cfg["threshold_articles"]:
+                needs_refresh = True
         else:
             await session.commit()
             logger.debug("Article %s already linked to story %s, skipped", article_id[:8], story_id[:8])
+
+    return needs_refresh
+
+
+# ---------------------------------------------------------------------------
+# Story refresh — keep narrative metadata up-to-date as articles join
+# ---------------------------------------------------------------------------
+
+
+async def get_story_for_refresh(story_id: str) -> dict | None:
+    """Fetch story + recent linked articles for the refresher LLM.
+
+    Returns ``{story, articles}`` where ``story`` carries the current
+    narrative state and ``articles`` is the newest N article snapshots
+    (capped via ``story_refresh.max_articles_in_prompt``).
+    """
+    cfg = _refresh_config()
+    factory = get_session_factory()
+
+    async with factory() as session:
+        story_row = (await session.execute(
+            text("""
+                SELECT id::text AS id, title, description, story_type, status,
+                       key_entities, categories, sentiment_avg, article_count,
+                       representative_article_id::text AS representative_article_id,
+                       last_refreshed_at, articles_since_refresh
+                FROM news_stories
+                WHERE id = :sid
+            """),
+            {"sid": story_id},
+        )).one_or_none()
+        if story_row is None:
+            return None
+
+        # Pull newest articles linked to this story
+        article_rows = (await session.execute(
+            text("""
+                SELECT a.id::text AS id, a.title, a.ai_summary, a.summary,
+                       a.published_at, a.url, a.source_name, a.tags,
+                       a.pipeline_metadata->'agents'->'sentiment'->'data'->>'sentiment_score'
+                           AS sentiment_score
+                FROM story_articles sa
+                JOIN articles a ON a.id = sa.article_id
+                WHERE sa.story_id = :sid
+                ORDER BY a.published_at DESC NULLS LAST
+                LIMIT :limit
+            """),
+            {"sid": story_id, "limit": cfg["max_articles_in_prompt"]},
+        )).fetchall()
+
+    return {
+        "story": {
+            "id": story_row.id,
+            "title": story_row.title,
+            "description": story_row.description,
+            "story_type": story_row.story_type,
+            "status": story_row.status,
+            "key_entities": story_row.key_entities or [],
+            "categories": story_row.categories or [],
+            "sentiment_avg": story_row.sentiment_avg,
+            "article_count": story_row.article_count,
+            "representative_article_id": story_row.representative_article_id,
+            "articles_since_refresh": story_row.articles_since_refresh,
+        },
+        "articles": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "ai_summary": r.ai_summary,
+                "summary": r.summary,
+                "published_at": r.published_at.isoformat() if r.published_at else None,
+                "url": r.url,
+                "source_name": r.source_name,
+                "tags": r.tags or [],
+                "sentiment_score": (
+                    float(r.sentiment_score) if r.sentiment_score is not None else None
+                ),
+            }
+            for r in article_rows
+        ],
+    }
+
+
+async def apply_refresh_result(
+    story_id: str,
+    *,
+    description: str | None,
+    timeline: list[dict] | None,
+    sentiment_avg: float | None,
+    key_entities: list[str] | None,
+    status: str | None,
+    representative_article_id: str | None,
+) -> None:
+    """Persist a refresher LLM result back to the story row.
+
+    Only non-None fields are written. Resets the refresh counter and
+    bumps last_refreshed_at unconditionally so the scheduler de-dupes.
+    """
+    cfg = _refresh_config()
+    factory = get_session_factory()
+    values: dict = {
+        "last_refreshed_at": func.now(),
+        "articles_since_refresh": 0,
+    }
+
+    if description is not None:
+        values["description"] = description[:2000]
+    if sentiment_avg is not None:
+        values["sentiment_avg"] = max(-1.0, min(1.0, float(sentiment_avg)))
+    if key_entities:
+        values["key_entities"] = key_entities[:50]
+    if status in {"developing", "ongoing", "concluded"}:
+        values["status"] = status
+    if representative_article_id:
+        try:
+            uuid.UUID(representative_article_id)
+            values["representative_article_id"] = representative_article_id
+        except (ValueError, TypeError):
+            logger.debug("invalid representative_article_id from LLM: %r", representative_article_id)
+
+    async with factory() as session:
+        await session.execute(
+            update(NewsStory).where(NewsStory.id == story_id).values(**values)
+        )
+        # Timeline gets a separate update so we can cap & ensure JSONB shape
+        if timeline is not None:
+            import json as _json
+            trimmed = timeline[-cfg["timeline_max_entries"]:]
+            await session.execute(
+                text("UPDATE news_stories SET timeline = CAST(:tl AS jsonb) WHERE id = :sid"),
+                {"sid": story_id, "tl": _json.dumps(trimmed)},
+            )
+        await session.commit()
+    logger.info("Story %s refreshed (entities=%d, status=%s)",
+                story_id[:8], len(key_entities or []), values.get("status", "-"))
+
+
+async def find_stories_needing_refresh(limit: int | None = None) -> list[str]:
+    """Return story IDs that have unprocessed articles or are overdue.
+
+    Used by the scheduler fallback. Picks stories where:
+      - is_active = true AND articles_since_refresh > 0
+      - AND last_refreshed_at is older than ``fallback_min_age_hours`` ago
+        (or NULL — never refreshed).
+    """
+    cfg = _refresh_config()
+    cap = limit if limit is not None else cfg["max_per_run"]
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=cfg["fallback_min_age_hours"])
+
+    factory = get_session_factory()
+    async with factory() as session:
+        result = await session.execute(
+            text("""
+                SELECT id::text
+                FROM news_stories
+                WHERE is_active = true
+                  AND articles_since_refresh > 0
+                  AND (last_refreshed_at IS NULL OR last_refreshed_at < :cutoff)
+                ORDER BY articles_since_refresh DESC, last_updated_at DESC
+                LIMIT :cap
+            """),
+            {"cutoff": cutoff, "cap": cap},
+        )
+        return [row[0] for row in result.fetchall()]
+
+
+async def enqueue_story_refresh(story_ids: list[str]) -> int:
+    """Submit a story_refresh agent group with redis-based dedup (5min window).
+
+    Returns the number of stories actually enqueued.
+    """
+    if not story_ids:
+        return 0
+
+    from app.db.redis import get_redis
+    from app.pipeline import agent_queue as aq
+
+    redis = await get_redis()
+    fresh: list[str] = []
+    for sid in story_ids:
+        key = f"nf:story:refresh:lock:{sid}"
+        # NX with 5-min TTL: only first caller in the window queues a refresh
+        ok = await redis.set(key, "1", ex=300, nx=True)
+        if ok:
+            fresh.append(sid)
+
+    if not fresh:
+        return 0
+
+    try:
+        group_id, result_key = await aq.submit_agent_group(
+            redis,
+            group_type="story_refresh",
+            context_data={"story_ids": fresh},
+            agents=["story_refresher"],
+            display_info={"label": f"刷新{len(fresh)}个故事线", "story_count": len(fresh)},
+            fire_and_forget=True,
+        )
+        await redis.expire(result_key, 60)
+        logger.info("Story refresh enqueued: %d stories (group=%s)", len(fresh), group_id[:8])
+        return len(fresh)
+    except Exception:
+        logger.warning("Failed to enqueue story refresh", exc_info=True)
+        # Release locks so they can be retried
+        for sid in fresh:
+            await redis.delete(f"nf:story:refresh:lock:{sid}")
+        return 0
+
+
+async def refresh_pending_stories() -> int:
+    """Scheduled fallback: find + enqueue stories needing refresh."""
+    ids = await find_stories_needing_refresh()
+    if not ids:
+        logger.debug("Story refresh fallback: no pending stories")
+        return 0
+    return await enqueue_story_refresh(ids)
 
 
 async def deactivate_stale_stories(hours: int = 72) -> int:

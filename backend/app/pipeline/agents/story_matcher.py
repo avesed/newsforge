@@ -62,6 +62,7 @@ class BatchStoryMatcher:
 
         from app.services.story_service import (
             create_story,
+            enqueue_story_refresh,
             find_candidate_stories,
             get_articles_for_story_matching,
             link_article_to_story,
@@ -118,6 +119,8 @@ class BatchStoryMatcher:
 
         # Track newly created stories in this batch (to avoid duplicates within same batch)
         new_stories: dict[str, str] = {}  # title -> story_id
+        # Track stories whose threshold was crossed so we can enqueue refresh once
+        refresh_targets: set[str] = set()
 
         for match in matches:
             try:
@@ -140,8 +143,12 @@ class BatchStoryMatcher:
                             )
                             errors.append(f"invalid story_id: {story_id}")
                             continue
-                        await link_article_to_story(story_id, article["id"], matched_by="llm_batch", confidence=0.9)
+                        needs_refresh = await link_article_to_story(
+                            story_id, article["id"], matched_by="llm_batch", confidence=0.9,
+                        )
                         await update_story_embedding(story_id)
+                        if needs_refresh:
+                            refresh_targets.add(story_id)
                         matched += 1
                     else:
                         errors.append(f"link action missing story_id for article {idx+1}")
@@ -150,10 +157,12 @@ class BatchStoryMatcher:
                     title = match.get("title", "")
                     # Check if we already created this story in this batch
                     if title in new_stories:
-                        await link_article_to_story(
+                        needs_refresh = await link_article_to_story(
                             new_stories[title], article["id"],
                             matched_by="llm_batch", confidence=0.9,
                         )
+                        if needs_refresh:
+                            refresh_targets.add(new_stories[title])
                         matched += 1
                     else:
                         story_id = await create_story(
@@ -176,6 +185,13 @@ class BatchStoryMatcher:
             except Exception as e:
                 logger.warning("Story match processing error for article %d: %s", idx + 1, e, exc_info=True)
                 errors.append(str(e)[:200])
+
+        # Enqueue refresh for any stories whose threshold was hit during this batch
+        if refresh_targets:
+            try:
+                await enqueue_story_refresh(list(refresh_targets))
+            except Exception:
+                logger.warning("Failed to enqueue story refresh from matcher", exc_info=True)
 
         duration = (time.monotonic() - start) * 1000
         logger.info(

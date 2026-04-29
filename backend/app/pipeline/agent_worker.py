@@ -223,6 +223,8 @@ class AgentWorker:
         # Story groups have their own execution path
         if group_type == "story":
             return await self._execute_story_group(group)
+        if group_type == "story_refresh":
+            return await self._execute_story_refresh_group(group)
 
         registry = get_agent_registry()
         context_data = group["context_data"]
@@ -409,6 +411,27 @@ class AgentWorker:
         )
 
         return {"story_matcher": result}
+
+    async def _execute_story_refresh_group(self, group: dict) -> dict:
+        """Execute a story refresh group — regenerate description/timeline/sentiment."""
+        from app.pipeline.agents.story_refresher import BatchStoryRefresher
+
+        story_ids = group.get("context_data", {}).get("story_ids", [])
+        if not story_ids:
+            logger.warning("Story refresh group has no story_ids")
+            return {"story_refresher": {"success": False, "error": "no story_ids"}}
+
+        refresher = BatchStoryRefresher()
+        result = await refresher.execute(story_ids)
+
+        logger.info(
+            "Story refresh group complete: %d stories | refreshed=%d skipped=%d",
+            len(story_ids),
+            result.get("refreshed", 0),
+            result.get("skipped", 0),
+        )
+
+        return {"story_refresher": result}
 
     async def _finalize_fire_and_forget(
         self, redis, group: dict, results: dict,

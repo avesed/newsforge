@@ -1020,6 +1020,22 @@ def create_scheduler() -> AsyncIOScheduler:
         max_instances=1,
     )
 
+    # Refresh stories with pending articles (fallback for threshold misses)
+    from app.services.story_service import refresh_pending_stories
+
+    refresh_cfg = config.get("story_refresh", {}) or {}
+    refresh_interval_hours = int(refresh_cfg.get("fallback_interval_hours", 1))
+    scheduler.add_job(
+        refresh_pending_stories,
+        "interval",
+        hours=refresh_interval_hours,
+        id="refresh_pending_stories",
+        name="Refresh stories with pending articles",
+        misfire_grace_time=600,
+        coalesce=True,
+        max_instances=1,
+    )
+
     return scheduler
 
 

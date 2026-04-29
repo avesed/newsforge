@@ -36,6 +36,8 @@ class NewsStory(Base):
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    articles_since_refresh: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     representative_article_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("articles.id", ondelete="SET NULL")

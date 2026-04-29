@@ -208,6 +208,15 @@ consumer:
   max_articles_before_restart: 5000
   max_uptime_seconds: 86400
   story_batch_size: 8              # articles per story clustering batch
+
+# Story refresh — keep storylines updated as new articles join
+story_refresh:
+  threshold_articles: 3            # trigger LLM refresh after N new articles linked
+  fallback_interval_hours: 1       # scheduler scans for pending refreshes this often
+  fallback_min_age_hours: 6        # only fallback-refresh stories not refreshed in this window
+  max_per_run: 20                  # cap stories refreshed per scheduler tick
+  max_articles_in_prompt: 12       # newest N articles fed to refresh LLM
+  timeline_max_entries: 30         # cap stored timeline length
   circuit_breaker_failure_threshold: 5    # consecutive failures to trip
   circuit_breaker_recovery_timeout: 60    # seconds before probing
 

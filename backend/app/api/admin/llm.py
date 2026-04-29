@@ -603,10 +603,12 @@ async def list_agent_configs(
     configs = result.unique().scalars().all()
 
     registry = get_agent_registry()
-    # Include non-registry pipeline purposes (classifier, cleaner)
-    # so they can also be assigned profiles
+    # Include non-registry pipeline purposes (classifier, cleaner) plus the
+    # story pipeline purposes (story_matcher, story_refresher, story_merger)
+    # so admins can route them to dedicated providers/profiles too.
     registered_agents = sorted(
-        list(registry.all_agents().keys()) + ["classifier", "cleaner"]
+        list(registry.all_agents().keys())
+        + ["classifier", "cleaner", "story_matcher", "story_refresher", "story_merger"]
     )
 
     return AgentConfigListResponse(
