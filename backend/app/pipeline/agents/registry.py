@@ -131,17 +131,15 @@ class AgentRegistry:
                     agent_ids.extend(agents)
 
         # --- finance_analyzer: conditional trigger ---
-        # Runs when ANY of: (1) article category matches, (2) has_market_impact,
-        # (3) source/feed pre-tagged as finance
+        # Runs ONLY when BOTH: article is finance-categorized (feed-tagged OR
+        # LLM-classified as finance) AND has_market_impact.
+        # Drops the previous over-broad `tech/politics` LLM categories — those
+        # are the main source of noise (e.g. random political news firing FA
+        # just because a classifier listed market_impact=true).
         if "finance_analyzer" not in agent_ids and "finance_analyzer" in self._agents:
-            fa_cats = set(self._triggers.get("finance_analyzer_categories", []))
             source_cats = set(source_categories or [])
-            should_run = (
-                has_market_impact
-                or bool(fa_cats & set(categories))
-                or "finance" in source_cats
-            )
-            if should_run:
+            is_finance = ("finance" in source_cats) or ("finance" in categories)
+            if is_finance and has_market_impact:
                 agent_ids.append("finance_analyzer")
 
         return self._collect_agents(set(agent_ids))

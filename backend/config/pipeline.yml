@@ -42,14 +42,11 @@ agent_triggers:
   # Condition-based triggers (evaluated at runtime)
   condition_triggered: []
 
-  # finance_analyzer trigger conditions (any one met → trigger):
-  # 1. Article classified as one of these categories
-  # 2. has_market_impact = true
-  # 3. Source/feed pre-tagged as finance
-  finance_analyzer_categories:
-    - finance
-    - tech
-    - politics
+  # finance_analyzer trigger conditions (BOTH must be true):
+  # 1. Article is finance-categorized — either feed.category=finance OR
+  #    LLM primary_category includes "finance"
+  # 2. has_market_impact = true (judged by classifier)
+  # Trigger is hardcoded in registry.py — no per-category list needed.
 
 # Agent priority tiers — split agents into P1 (user-facing, fast) and P2 (analytical, async)
 # P1 agents complete before article is shown to user; P2 runs fire-and-forget afterward.
