@@ -57,11 +57,16 @@ def _register_builtin_sources(registry: SourceRegistry) -> None:
     from app.sources.rss.native import NativeRSSSource
     from app.sources.rss.google_news import GoogleNewsSource, GoogleNewsConfig
     from app.sources.api.finnhub import FinnhubNewsSource
+    from app.sources.api.stockpulse import StockPulseSource
 
     registry.register(NativeRSSSource())
 
     # Finnhub — US stock company news + general market news
     registry.register(FinnhubNewsSource())
+
+    # StockPulse — fan-out aggregator (yfinance + akshare + finnhub + tiingo + ...)
+    # driven by watched_symbols table, not the generic poll_api_sources path.
+    registry.register(StockPulseSource.from_settings())
 
     # Default Google News instances: EN-US + ZH-CN
     registry.register(GoogleNewsSource(config=GoogleNewsConfig(

@@ -22,3 +22,4 @@ from app.models.llm_provider import LLMProvider  # noqa: F401
 from app.models.llm_profile import LLMProfile  # noqa: F401
 from app.models.agent_llm_config import AgentLLMConfig  # noqa: F401
 from app.models.system_setting import SystemSetting  # noqa: F401
+from app.models.watched_symbol import WatchedSymbol  # noqa: F401

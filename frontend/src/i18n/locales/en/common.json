@@ -382,6 +382,41 @@
       "importAnother": "Import Another File",
       "fileTooLarge": "File is too large. Maximum allowed size is 500 MB.",
       "dropzoneLabel": "Drop zone for JSON import file, or press Enter to select a file"
+    },
+    "stockpulse": {
+      "nav": "StockPulse",
+      "title": "StockPulse Integration",
+      "description": "StockPulse is the upstream fan-out aggregator (yfinance + akshare + finnhub + tiingo + ...). NewsForge polls it every 5 minutes for each ticker in the watched_symbols table.",
+      "configHeading": "Connection",
+      "urlLabel": "StockPulse URL",
+      "urlHint": "Base URL of the StockPulse backend, e.g. http://stockpulse-app:80 inside Docker or http://172.17.0.1:8010 via host gateway.",
+      "apiKeyLabel": "API Key",
+      "apiKeyHint": "Create a consumer in the StockPulse admin UI and paste the X-API-Key here. Leave blank to fall back to the environment variable; submit an empty string to clear.",
+      "apiKeyCurrent": "current",
+      "apiKeyPlaceholder": "X-API-Key (only shown once at creation)",
+      "save": "Save",
+      "saved": "Configuration saved",
+      "saveFailed": "Save failed",
+      "testConnection": "Test connection",
+      "testOk": "Connection OK",
+      "testFailed": "Connection failed",
+      "status": "Status",
+      "yamlEnabled": "Enabled",
+      "pollInterval": "Poll interval",
+      "minutes": "min",
+      "defaultLimit": "Items per ticker",
+      "watchedHeading": "Watched symbols",
+      "watchedCount": "{{count}} total",
+      "noWatched": "No watched symbols yet — waiting for downstream consumers (e.g. WebStock) to sync their watchlists.",
+      "pollNow": "Poll now",
+      "pollDispatched": "Poll dispatched",
+      "pollFailed": "Poll failed",
+      "colSymbol": "Symbol",
+      "colMarket": "Market",
+      "colRegisteredBy": "Source",
+      "colLastViewed": "Last viewed",
+      "colLastPolled": "Last polled",
+      "colError": "Last error"
     }
   },
   "stories": {
@@ -429,6 +464,7 @@
     "confirm": "Confirm",
     "back": "Back",
     "reset": "Reset",
-    "resetting": "Resetting..."
+    "resetting": "Resetting...",
+    "refresh": "Refresh"
   }
 }

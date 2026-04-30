@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     finnhub_api_key: str | None = None
     newsapi_key: str | None = None
 
+    # StockPulse — fan-out aggregator for per-symbol news
+    stockpulse_url: str | None = None
+    stockpulse_api_key: str | None = None
+
     # Pipeline
     pipeline_config_path: str = "config/pipeline.yml"
 

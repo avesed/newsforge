@@ -95,6 +95,7 @@ def create_app() -> FastAPI:
     from app.api.admin import llm as admin_llm
     from app.api.admin import import_export as admin_import_export
     from app.api.admin import users as admin_users
+    from app.api.admin import stockpulse as admin_stockpulse
 
     app.include_router(admin_pipeline.router, prefix="/api/v1")
     app.include_router(admin_sources.router, prefix="/api/v1")
@@ -103,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_llm.router, prefix="/api/v1")
     app.include_router(admin_import_export.router, prefix="/api/v1")
     app.include_router(admin_users.router, prefix="/api/v1")
+    app.include_router(admin_stockpulse.router, prefix="/api/v1")
 
     # --- Internal API (machine consumers) ---
     from app.api.internal import api as internal_api

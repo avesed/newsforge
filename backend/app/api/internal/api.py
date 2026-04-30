@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.models.api_consumer import ApiConsumer
 from app.models.article import Article
+from app.models.watched_symbol import WatchedSymbol
 from app.schemas.article import (
     ArticleStatusItem,
     IngestArticleResult,
@@ -677,6 +678,106 @@ async def stream_analysis(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+class WatchedSymbolItem(CamelModel):
+    """One symbol in a watched-symbols sync payload.
+
+    For bare 6-digit A-share codes (e.g. "600519"), the caller MUST send
+    `market="sh"` or `market="sz"` — otherwise StockPulse's auto-detection
+    will treat them as US tickers and akshare/tushare won't run.
+    """
+    symbol: str
+    market: str | None = None
+    last_viewed_at: datetime | None = None
+
+
+class WatchedSymbolsSyncRequest(CamelModel):
+    symbols: list[WatchedSymbolItem]
+
+
+class WatchedSymbolsSyncResponse(CamelModel):
+    received: int
+    upserted: int
+    consumer: str
+
+
+@router.post("/watched-symbols/sync", response_model=WatchedSymbolsSyncResponse)
+async def sync_watched_symbols(
+    body: WatchedSymbolsSyncRequest,
+    consumer: ApiConsumer = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upsert the consumer's full watchlist of symbols.
+
+    Idempotent: caller sends the full current set on every sync. We upsert
+    by (symbol, market) and bump `last_viewed_at` to the max of the existing
+    and incoming value so that a symbol staying viewed keeps its hot tier.
+
+    NewsForge's StockPulse poller reads from this table to drive per-symbol
+    fetches, tiered hot/warm/cold by `last_viewed_at`.
+    """
+    if not body.symbols:
+        return WatchedSymbolsSyncResponse(
+            received=0, upserted=0, consumer=consumer.name,
+        )
+
+    if len(body.symbols) > 5000:
+        raise HTTPException(
+            status_code=422,
+            detail="Maximum 5000 symbols per sync; split into multiple calls",
+        )
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for it in body.symbols:
+        sym = (it.symbol or "").strip().upper()
+        if not sym:
+            continue
+        market = (it.market or "").strip().lower() or None
+        key = (sym, market)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "symbol": sym[:32],
+            "market": market,
+            "registered_by": consumer.name[:64],
+            "last_viewed_at": it.last_viewed_at,
+        })
+
+    if not rows:
+        return WatchedSymbolsSyncResponse(
+            received=len(body.symbols), upserted=0, consumer=consumer.name,
+        )
+
+    # Bulk upsert via INSERT ... ON CONFLICT DO UPDATE.
+    # last_viewed_at takes the max of existing and incoming so multiple
+    # consumers can independently bump the same symbol.
+    stmt = text(
+        """
+        INSERT INTO watched_symbols
+            (symbol, market, registered_by, last_viewed_at)
+        VALUES
+            (:symbol, :market, :registered_by, :last_viewed_at)
+        ON CONFLICT (symbol, market) DO UPDATE SET
+            last_viewed_at = GREATEST(
+                watched_symbols.last_viewed_at,
+                EXCLUDED.last_viewed_at
+            ),
+            registered_by = COALESCE(EXCLUDED.registered_by, watched_symbols.registered_by),
+            updated_at = NOW()
+        """
+    )
+    for row in rows:
+        await db.execute(stmt, row)
+    await db.commit()
+
+    return WatchedSymbolsSyncResponse(
+        received=len(body.symbols),
+        upserted=len(rows),
+        consumer=consumer.name,
     )
 
 

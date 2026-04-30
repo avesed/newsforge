@@ -252,6 +252,185 @@ async def poll_api_sources() -> None:
         logger.info("API source poll complete: %d new articles", total_new)
 
 
+async def poll_stockpulse_tier(tier: str) -> None:
+    """Poll StockPulse for the full set of watched symbols.
+
+    The ``tier`` argument is kept for the manual /admin trigger endpoint
+    (which still accepts hot|warm|cold paths) but is ignored — every
+    invocation polls every row in ``watched_symbols``. The single 5-minute
+    scheduler job calls this with tier="hot" for backward compatibility.
+
+    One tick:
+      1. Read all watched_symbols rows
+      2. Fetch most-recent N (default_limit) articles per symbol from
+         StockPulse — no `since`, time window auto-adapts to news density
+      3. Dedup by URL, insert pending articles, enqueue for the pipeline
+    """
+    from sqlalchemy import select, update
+    from app.models.article import Article
+    from app.models.watched_symbol import WatchedSymbol
+    from app.sources.api.stockpulse import StockPulseSource
+    from app.sources.base import FetchParams
+
+    config = load_pipeline_config()
+    sp_cfg = (config.get("sources") or {}).get("stockpulse") or {}
+    if not sp_cfg.get("enabled", False):
+        logger.debug("StockPulse source disabled in pipeline.yml, skipping tier=%s", tier)
+        return
+
+    per_symbol_limit = int(sp_cfg.get("default_limit", 10))
+
+    factory = get_session_factory()
+    now = datetime.now(timezone.utc)
+
+    # All tiers poll the same symbol set on the same cadence (limit-only
+    # fetch makes hot/warm/cold split pointless). The `tier` argument is
+    # accepted for backward compatibility with the /admin manual trigger
+    # but is otherwise ignored.
+    if tier not in ("hot", "warm", "cold"):
+        logger.warning("Unknown StockPulse tier: %s", tier)
+        return
+    async with factory() as session:
+        stmt = select(WatchedSymbol)
+        rows = (await session.execute(stmt)).scalars().all()
+
+    if not rows:
+        logger.debug("StockPulse tier=%s: no watched symbols", tier)
+        return
+
+    # Build one fetch per (symbol, market) pair. We use the StockPulseSource
+    # directly with explicit per-call market (rather than its auto-inference)
+    # so the registry can stay symbol-list-agnostic.
+    source = StockPulseSource.from_settings()
+    # Override per-symbol limit from config
+    source._per_symbol_limit = per_symbol_limit
+
+    if not source.is_configured:
+        logger.warning("StockPulse not configured; skipping tier=%s", tier)
+        return
+
+    # Group symbols: StockPulseSource.fetch handles its own concurrency via
+    # asyncio.gather + a semaphore. Pass them all in one call.
+    symbols: list[str] = []
+    market_overrides: dict[str, str] = {}
+    for w in rows:
+        symbols.append(w.symbol)
+        if w.market:
+            market_overrides[w.symbol] = w.market
+
+    # No `since` — fetch the most recent N (per_symbol_limit) per symbol.
+    # The time span auto-adapts to news density (hot ticker → narrow window,
+    # cold ticker → wide window). NewsForge dedup handles repeat articles
+    # on subsequent polls. Stored `market` from watched_symbols overrides
+    # StockPulseSource's inference when they disagree (e.g. consumer knows
+    # something inference can't, like a custom ticker class).
+    raw_articles: list = []
+    fetch_start = time.monotonic()
+    try:
+        params = FetchParams(symbols=symbols)
+        raw_articles = await source.fetch(params)
+    except Exception:
+        logger.exception("StockPulse bulk fetch failed for tier=%s", tier)
+        raw_articles = []
+    fetch_ms = (time.monotonic() - fetch_start) * 1000
+
+    if not raw_articles:
+        logger.info(
+            "StockPulse tier=%s: 0 articles for %d symbols (%.0fms)",
+            tier, len(symbols), fetch_ms,
+        )
+        # Still bump last_polled_at so we can see the scheduler is running.
+        async with factory() as session:
+            await session.execute(
+                update(WatchedSymbol)
+                .where(WatchedSymbol.symbol.in_(symbols))
+                .values(last_polled_at=now, last_error=None)
+            )
+            await session.commit()
+        return
+
+    redis = await get_redis()
+    dedup = DedupEngine(redis)
+
+    new_count = 0
+    dup_count = 0
+    err_count = 0
+
+    for raw in raw_articles:
+        try:
+            is_dup, norm_url, detected_lang = await dedup.is_duplicate(raw.url, raw.title)
+            if is_dup:
+                dup_count += 1
+                continue
+
+            finance_meta: dict[str, Any] = {}
+            if raw.extra:
+                if raw.extra.get("symbols"):
+                    finance_meta["symbols"] = raw.extra["symbols"]
+                if raw.extra.get("provider"):
+                    finance_meta["provider"] = raw.extra["provider"]
+                if raw.extra.get("stockpulse_source"):
+                    finance_meta["stockpulse_source"] = raw.extra["stockpulse_source"]
+                if raw.extra.get("raw_payload"):
+                    finance_meta["raw_payload"] = raw.extra["raw_payload"]
+
+            article_id = uuid.uuid4()
+            article_lang = raw.language or detected_lang
+            async with factory() as session:
+                article = Article(
+                    id=article_id,
+                    external_id=raw.external_id,
+                    source_name=raw.source_name,
+                    title=raw.title,
+                    url=norm_url,
+                    published_at=raw.published_at,
+                    language=article_lang,
+                    summary=raw.summary,
+                    top_image=raw.top_image,
+                    finance_metadata=finance_meta or None,
+                    content_status="pending",
+                )
+                session.add(article)
+                try:
+                    await session.commit()
+                except Exception as e:
+                    await session.rollback()
+                    logger.debug(
+                        "StockPulse insert failed for %s: %s", norm_url[:80], e,
+                    )
+                    dup_count += 1
+                    continue
+
+            await q.enqueue_article(redis, {
+                "article_id": str(article_id),
+                "url": norm_url,
+                "title": raw.title,
+                "summary": raw.summary or "",
+                "language": raw.language,
+                "source_name": raw.source_name,
+            })
+            new_count += 1
+        except Exception:
+            logger.exception("StockPulse ingest error for %s", raw.url[:80])
+            err_count += 1
+
+    # Bump last_polled_at on the watched symbols we just polled
+    async with factory() as session:
+        await session.execute(
+            update(WatchedSymbol)
+            .where(WatchedSymbol.symbol.in_(symbols))
+            .values(last_polled_at=now, last_error=None)
+        )
+        await session.commit()
+
+    logger.info(
+        "StockPulse tier=%s: %d new / %d dup / %d err from %d articles "
+        "across %d symbols (%.0fms)",
+        tier, new_count, dup_count, err_count,
+        len(raw_articles), len(symbols), fetch_ms,
+    )
+
+
 async def cleanup_old_articles() -> None:
     """Delete articles older than retention period."""
     from datetime import timedelta
@@ -996,6 +1175,33 @@ def create_scheduler() -> AsyncIOScheduler:
         coalesce=True,
         max_instances=1,
     )
+
+    # StockPulse polling — single job that fans out to every row in
+    # watched_symbols every N minutes. limit-only fetch (no since), so
+    # there's no value in splitting hot/warm/cold tiers; one symbol set,
+    # one cadence. Internally we still call poll_stockpulse_tier("hot")
+    # for backward compatibility with the manual /admin trigger endpoint.
+    sp_cfg = sources_config.get("stockpulse", {}) or {}
+    sp_tiers = sp_cfg.get("tiers", {}) or {}
+    if sp_cfg.get("enabled", False):
+        # Use the hot-tier interval as the single poll cadence; hot subset
+        # naturally widens to "all rows" once warm/cold windows are long.
+        # Manual trigger endpoint still accepts hot|warm|cold paths but they
+        # all hit the same code path.
+        for tier_name, default_interval in (("hot", 5),):
+            tier_conf = sp_tiers.get(tier_name) or {}
+            interval_minutes = int(tier_conf.get("interval_minutes", default_interval))
+            scheduler.add_job(
+                poll_stockpulse_tier,
+                "interval",
+                minutes=interval_minutes,
+                args=[tier_name],
+                id=f"stockpulse_{tier_name}",
+                name=f"StockPulse poll ({tier_name})",
+                misfire_grace_time=300,
+                coalesce=True,
+                max_instances=1,
+            )
 
     # Deactivate stale stories (every 6 hours)
     from app.services.story_service import deactivate_stale_stories

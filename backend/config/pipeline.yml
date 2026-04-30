@@ -183,6 +183,20 @@ sources:
     company_news_lookback_days: 7
     request_timeout: 30.0
 
+  # StockPulse — fan-out aggregator (yfinance + akshare + finnhub + tiingo + ...)
+  # Driven by the watched_symbols table (consumers like WebStock POST their
+  # watchlist symbols to /api/internal/watched-symbols/sync). One scheduler
+  # job polls every watched symbol every `tiers.hot.interval_minutes`
+  # minutes; limit-only (no `since`) so the fetch window auto-adapts to news
+  # density. NewsForge dedup catches repeats.
+  stockpulse:
+    enabled: true
+    source_type: api
+    default_limit: 10               # most recent N items per symbol per call
+    tiers:
+      hot:
+        interval_minutes: 5         # single poll cadence for all symbols
+
 # Scheduling
 scheduler:
   feed_poll_interval_seconds: 300    # 5 min default

@@ -744,3 +744,69 @@ export async function updateUser(
 export async function deleteUser(id: number) {
   await apiClient.delete(`/admin/users/${id}`);
 }
+
+// --- StockPulse integration ---
+
+export interface StockPulseConfigRaw {
+  url: string | null;
+  apiKeySet: boolean;
+  apiKeyPreview: string | null;
+  enabledInYaml: boolean;
+  pollIntervalMinutes: number;
+  defaultLimit: number;
+}
+
+export interface StockPulseTestResultRaw {
+  ok: boolean;
+  statusCode: number | null;
+  message: string;
+  elapsedMs: number | null;
+}
+
+export interface WatchedSymbolRowRaw {
+  id: number;
+  symbol: string;
+  market: string | null;
+  registeredBy: string | null;
+  lastViewedAt: string | null;
+  lastPolledAt: string | null;
+  lastError: string | null;
+}
+
+export interface WatchedSymbolsResponseRaw {
+  total: number;
+  items: WatchedSymbolRowRaw[];
+}
+
+export async function getStockPulseConfig() {
+  const res = await apiClient.get("/admin/stockpulse/config");
+  return res.data as StockPulseConfigRaw;
+}
+
+export async function updateStockPulseConfig(data: {
+  url?: string | null;
+  apiKey?: string | null;
+}) {
+  const res = await apiClient.put("/admin/stockpulse/config", {
+    url: data.url,
+    api_key: data.apiKey,
+  });
+  return res.data as StockPulseConfigRaw;
+}
+
+export async function testStockPulseConnection() {
+  const res = await apiClient.post("/admin/stockpulse/test");
+  return res.data as StockPulseTestResultRaw;
+}
+
+export async function getStockPulseWatched(limit = 200) {
+  const res = await apiClient.get("/admin/stockpulse/watched", {
+    params: { limit },
+  });
+  return res.data as WatchedSymbolsResponseRaw;
+}
+
+export async function triggerStockPulsePoll(tier: "hot" | "warm" | "cold") {
+  const res = await apiClient.post(`/admin/stockpulse/poll/${tier}`);
+  return res.data as { tier: string; triggered: boolean; message: string };
+}

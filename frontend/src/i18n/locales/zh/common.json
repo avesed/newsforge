@@ -382,6 +382,41 @@
       "importAnother": "导入其他文件",
       "fileTooLarge": "文件过大，最大允许 500 MB。",
       "dropzoneLabel": "JSON 导入文件拖放区域，或按回车键选择文件"
+    },
+    "stockpulse": {
+      "nav": "StockPulse",
+      "title": "StockPulse 接入",
+      "description": "StockPulse 是上游聚合源（yfinance + akshare + finnhub + tiingo + ...）。NewsForge 按 watched_symbols 表中的股票，每 5 分钟轮询一次最新新闻。",
+      "configHeading": "连接配置",
+      "urlLabel": "StockPulse 地址",
+      "urlHint": "StockPulse 后端基础 URL，例如容器内 http://stockpulse-app:80 或宿主网关 http://172.17.0.1:8010。",
+      "apiKeyLabel": "API Key",
+      "apiKeyHint": "在 StockPulse 管理面板创建 consumer 后获取。留空表示沿用环境变量；填空字符串可清除已保存的 Key。",
+      "apiKeyCurrent": "当前",
+      "apiKeyPlaceholder": "X-API-Key（仅在创建时可见一次）",
+      "save": "保存",
+      "saved": "配置已保存",
+      "saveFailed": "保存失败",
+      "testConnection": "测试连接",
+      "testOk": "连接成功",
+      "testFailed": "连接失败",
+      "status": "运行状态",
+      "yamlEnabled": "已启用",
+      "pollInterval": "轮询间隔",
+      "minutes": "分钟",
+      "defaultLimit": "每股票拉取条数",
+      "watchedHeading": "监控股票",
+      "watchedCount": "共 {{count}} 只",
+      "noWatched": "暂无监控股票，等待 WebStock 等下游推送。",
+      "pollNow": "立即轮询",
+      "pollDispatched": "已触发轮询",
+      "pollFailed": "轮询触发失败",
+      "colSymbol": "股票代码",
+      "colMarket": "市场",
+      "colRegisteredBy": "来源消费者",
+      "colLastViewed": "最近查看",
+      "colLastPolled": "最近轮询",
+      "colError": "上次错误"
     }
   },
   "stories": {
@@ -429,6 +464,7 @@
     "confirm": "\u786e\u8ba4",
     "back": "\u8fd4\u56de",
     "reset": "重置",
-    "resetting": "重置中..."
+    "resetting": "重置中...",
+    "refresh": "刷新"
   }
 }

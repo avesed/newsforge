@@ -18,6 +18,7 @@ const AdminFeedsPage = lazy(() => import("@/pages/admin/AdminFeedsPage"));
 const AdminConsumersPage = lazy(() => import("@/pages/admin/AdminConsumersPage"));
 const AdminLLMPage = lazy(() => import("@/pages/admin/AdminLLMPage"));
 const AdminPipelinePage = lazy(() => import("@/pages/admin/AdminPipelinePage"));
+const AdminStockPulsePage = lazy(() => import("@/pages/admin/AdminStockPulsePage"));
 const AdminImportPage = lazy(() => import("@/pages/admin/AdminImportPage"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/AdminUsersPage"));
 const ReadingHistoryPage = lazy(() => import("@/pages/ReadingHistoryPage"));
@@ -138,6 +139,14 @@ export default function App() {
               element={
                 <RequireAdmin>
                   <AdminImportPage />
+                </RequireAdmin>
+              }
+            />
+            <Route
+              path="/admin/stockpulse"
+              element={
+                <RequireAdmin>
+                  <AdminStockPulsePage />
                 </RequireAdmin>
               }
             />
