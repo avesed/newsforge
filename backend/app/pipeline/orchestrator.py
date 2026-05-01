@@ -309,14 +309,14 @@ async def poll_stockpulse_tier(tier: str) -> None:
         logger.warning("StockPulse not configured; skipping tier=%s", tier)
         return
 
-    # Group symbols: StockPulseSource.fetch handles its own concurrency via
-    # asyncio.gather + a semaphore. Pass them all in one call.
+    # Deduplicate symbols across consumers — multiple consumers may watch
+    # the same ticker; we only need to fetch it once from StockPulse.
+    seen_syms: set[str] = set()
     symbols: list[str] = []
-    market_overrides: dict[str, str] = {}
     for w in rows:
-        symbols.append(w.symbol)
-        if w.market:
-            market_overrides[w.symbol] = w.market
+        if w.symbol not in seen_syms:
+            seen_syms.add(w.symbol)
+            symbols.append(w.symbol)
 
     # No `since` — fetch the most recent N (per_symbol_limit) per symbol.
     # The time span auto-adapts to news density (hot ticker → narrow window,

@@ -21,7 +21,7 @@ class WatchedSymbol(Base):
     __tablename__ = "watched_symbols"
 
     __table_args__ = (
-        UniqueConstraint("symbol", "market", name="uq_watched_symbols_symbol_market"),
+        UniqueConstraint("symbol", "market", "registered_by", name="uq_watched_symbols_sym_mkt_consumer"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -31,12 +31,14 @@ class WatchedSymbol(Base):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
 
     # Market hint used when calling StockPulse: 'sh' | 'sz' | 'hk' | 'us' |
-    # 'metal' | None (let StockPulse auto-detect).
-    market: Mapped[str | None] = mapped_column(String(8))
+    # 'metal' | '' (empty = let StockPulse auto-detect).
+    # NOT NULL + default '' so the unique constraint works (NULL ≠ NULL in PG).
+    market: Mapped[str] = mapped_column(String(8), nullable=False, default="", server_default="")
 
-    # Source of the registration (e.g. "webstock"). Useful for multi-tenant
-    # debugging if more consumers join later.
-    registered_by: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Source of the registration (e.g. "webstock"). Each consumer gets its
+    # own rows so unsubscribing one consumer doesn't affect others.
+    # NOT NULL + default '' for the same NULL-uniqueness reason.
+    registered_by: Mapped[str] = mapped_column(String(64), nullable=False, default="", server_default="", index=True)
 
     # Most recent time any user viewed this symbol on the registering consumer.
     # Drives the scheduler's hot/warm/cold tier classification.

@@ -700,6 +700,7 @@ class WatchedSymbolsSyncRequest(CamelModel):
 class WatchedSymbolsSyncResponse(CamelModel):
     received: int
     upserted: int
+    removed: int = 0
     consumer: str
 
 
@@ -730,12 +731,12 @@ async def sync_watched_symbols(
         )
 
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str | None]] = set()
+    seen: set[tuple[str, str]] = set()
     for it in body.symbols:
         sym = (it.symbol or "").strip().upper()
         if not sym:
             continue
-        market = (it.market or "").strip().lower() or None
+        market = (it.market or "").strip().lower()
         key = (sym, market)
         if key in seen:
             continue
@@ -748,35 +749,65 @@ async def sync_watched_symbols(
         })
 
     if not rows:
+        # Consumer sent an empty list — remove all its subscriptions.
+        await db.execute(
+            text("DELETE FROM watched_symbols WHERE registered_by = :name"),
+            {"name": consumer.name},
+        )
+        await db.commit()
         return WatchedSymbolsSyncResponse(
-            received=len(body.symbols), upserted=0, consumer=consumer.name,
+            received=len(body.symbols), upserted=0, removed=0, consumer=consumer.name,
         )
 
-    # Bulk upsert via INSERT ... ON CONFLICT DO UPDATE.
-    # last_viewed_at takes the max of existing and incoming so multiple
-    # consumers can independently bump the same symbol.
+    # Upsert per (symbol, market, consumer).
+    # Each consumer owns its own rows; last_viewed_at only bumps for THIS
+    # consumer, so two consumers watching the same ticker have independent
+    # freshness tracking.
     stmt = text(
         """
         INSERT INTO watched_symbols
             (symbol, market, registered_by, last_viewed_at)
         VALUES
             (:symbol, :market, :registered_by, :last_viewed_at)
-        ON CONFLICT (symbol, market) DO UPDATE SET
+        ON CONFLICT (symbol, market, registered_by) DO UPDATE SET
             last_viewed_at = GREATEST(
                 watched_symbols.last_viewed_at,
                 EXCLUDED.last_viewed_at
             ),
-            registered_by = COALESCE(EXCLUDED.registered_by, watched_symbols.registered_by),
             updated_at = NOW()
         """
     )
     for row in rows:
         await db.execute(stmt, row)
+
+    # Full-sync cleanup: remove rows this consumer previously registered
+    # but did NOT include in the current payload (i.e. user unsubscribed).
+    incoming_keys = {(r["symbol"], r["market"]) for r in rows}
+    existing = (await db.execute(
+        text(
+            "SELECT id, symbol, market FROM watched_symbols "
+            "WHERE registered_by = :name"
+        ),
+        {"name": consumer.name},
+    )).all()
+    stale_ids = [
+        r.id for r in existing
+        if (r.symbol, r.market) not in incoming_keys
+    ]
+    removed = 0
+    if stale_ids:
+        await db.execute(
+            text("DELETE FROM watched_symbols WHERE id = ANY(:ids)"),
+            {"ids": stale_ids},
+        )
+        removed = len(stale_ids)
+
     await db.commit()
 
     return WatchedSymbolsSyncResponse(
         received=len(body.symbols),
         upserted=len(rows),
+        removed=removed,
         consumer=consumer.name,
     )
 
