@@ -229,12 +229,17 @@ class UnifiedEntityAgent(AgentDefinition):
     async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
         start = time.monotonic()
 
+        from app.core.llm.types import LLMCallError
         try:
             data, tokens = await self._cached_json_call(
                 llm, context, _TASK_PROMPT, purpose="entity"
             )
+        except LLMCallError:
+            # LLM-attributable failure — let safe_execute mark llm_failed and
+            # propagate to the circuit breaker.
+            raise
         except Exception as e:
-            logger.error("Entity extraction LLM call failed for article %s: %s", context.article_id, e)
+            logger.error("Entity extraction post-LLM failure for article %s: %s", context.article_id, e)
             return AgentResult(
                 agent_id=self.agent_id,
                 success=False,

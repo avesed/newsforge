@@ -522,9 +522,29 @@ async def _clean_content(raw_text: str, title: str) -> tuple[str, int]:
     try:
         llm = get_llm_gateway()
         response = await llm.chat(request, purpose="cleaner")
+        # Cleaner succeeded — record success on its cb purpose.
+        try:
+            from app.db.redis import get_redis
+            from app.pipeline import circuit_breaker as cb
+            await cb.record_success(await get_redis(), "cleaner")
+        except Exception:
+            logger.debug("Failed to record cleaner cb success", exc_info=True)
         return response.content, response.usage.total_tokens
-    except Exception:
+    except Exception as e:
         logger.warning("Content cleaning failed for '%s', using raw text", title[:60], exc_info=True)
+        # Attribute LLM failures to the cleaner purpose so the cb can trip.
+        from app.core.llm.types import LLMCallError
+        if isinstance(e, LLMCallError):
+            try:
+                from app.db.redis import get_redis
+                from app.pipeline import circuit_breaker as cb
+                from app.core.config import load_pipeline_config
+                threshold = load_pipeline_config().get("consumer", {}).get(
+                    "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+                )
+                await cb.record_failure(await get_redis(), "cleaner", failure_threshold=threshold)
+            except Exception:
+                logger.debug("Failed to record cleaner cb failure", exc_info=True)
         return raw_text, 0
 
 
@@ -871,6 +891,7 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
 
     classifier_full_text = cleaned_text if cleaned_text else (content.full_text if content else None)
 
+    classify_ran = False
     if checkpoint and "classification" in checkpoint:
         results["classification"] = checkpoint["classification"]
         categories = [c["slug"] for c in checkpoint["classification"]["categories"]]
@@ -885,11 +906,28 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
             and value_score == 0
         )
     else:
+        classify_ran = True
         classify_start = time.monotonic()
         classify_input = {"title": title, "summary": summary}
         if classifier_full_text:
             classify_input["full_text"] = classifier_full_text
-        classify_results = await classify_articles([classify_input])
+        try:
+            classify_results = await classify_articles([classify_input])
+        except Exception as e:
+            from app.core.llm.types import LLMCallError
+            if isinstance(e, LLMCallError):
+                try:
+                    from app.db.redis import get_redis as _get_redis
+                    from app.pipeline import circuit_breaker as cb
+                    threshold = load_pipeline_config().get("consumer", {}).get(
+                        "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+                    )
+                    await cb.record_failure(
+                        await _get_redis(), "classifier", failure_threshold=threshold,
+                    )
+                except Exception:
+                    logger.debug("Failed to record classifier cb failure", exc_info=True)
+            raise
         classification = classify_results[0]
         classify_ms = (time.monotonic() - classify_start) * 1000
 
@@ -934,8 +972,26 @@ async def run_pipeline(article_id: str, article_data: dict, progress_callback=No
     if not is_default and (not checkpoint or "classification" not in (checkpoint or {})):
         article_data["_checkpoint"]["classification"] = results["classification"]
 
+    # Update classifier cb based on outcome (only when we just ran classify, not on
+    # a checkpoint restore — the failure/success was already recorded then).
+    if classify_ran:
+        try:
+            from app.db.redis import get_redis as _get_redis
+            from app.pipeline import circuit_breaker as cb
+            if is_default:
+                threshold = load_pipeline_config().get("consumer", {}).get(
+                    "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+                )
+                await cb.record_failure(
+                    await _get_redis(), "classifier", failure_threshold=threshold,
+                )
+            else:
+                await cb.record_success(await _get_redis(), "classifier")
+        except Exception:
+            logger.debug("Failed to record classifier cb outcome", exc_info=True)
+
     if is_default:
-        # Raise so consumer records a circuit-breaker failure and re-enqueues for retry.
+        # Raise so the article is treated as failed and re-enqueued for retry.
         # Keeping fetch/clean checkpoints means the retry won't re-fetch — only classify reruns.
         raise ClassificationFailedError(
             f"Classification returned defaults for {title[:80]}"

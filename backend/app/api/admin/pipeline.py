@@ -14,6 +14,7 @@ from app.db.redis import get_redis
 from app.models.article import Article
 from app.models.pipeline_event import PipelineEvent
 from app.models.user import User
+from app.pipeline import circuit_breaker as cb
 from app.pipeline import queue as q
 from app.schemas.base import CamelModel
 
@@ -254,13 +255,25 @@ async def queue_status(admin: User = Depends(require_admin)):
 
     paused = await q.is_paused(redis)
 
-    # Circuit breaker status
-    cb_data = await redis.hgetall("nf:pipeline:circuit_breaker")
-    cb_state = "closed"
-    cb_failures = 0
-    if cb_data:
-        cb_state = cb_data.get("state", "closed")
-        cb_failures = int(cb_data.get("consecutive_failures", 0))
+    # Circuit breaker status (per-purpose + global summary)
+    states = await cb.get_all_states(redis)
+    open_purposes = [p for p, s in states.items() if s.get("state") == cb.OPEN]
+    global_open = bool(open_purposes)
+    max_failures = max(
+        (int(s.get("consecutive_failures", 0)) for s in states.values()),
+        default=0,
+    )
+    purposes_payload = [
+        {
+            "purpose": p,
+            "state": s.get("state", cb.CLOSED),
+            "consecutiveFailures": int(s.get("consecutive_failures", 0)),
+            "lastFailureTime": float(s.get("last_failure_time", 0)),
+            "lastProbeTime": float(s.get("last_probe_time", 0)),
+            "lastSuccessTime": float(s.get("last_success_time", 0)),
+        }
+        for p, s in sorted(states.items())
+    ]
 
     return {
         **snapshot,
@@ -270,8 +283,10 @@ async def queue_status(admin: User = Depends(require_admin)):
         },
         "paused": paused,
         "circuitBreaker": {
-            "state": cb_state,
-            "consecutiveFailures": cb_failures,
+            "state": "open" if global_open else "closed",
+            "consecutiveFailures": max_failures,
+            "openPurposes": open_purposes,
+            "purposes": purposes_payload,
         },
     }
 
@@ -375,33 +390,62 @@ async def resume_pipeline(admin: User = Depends(require_admin)):
 
 @router.get("/circuit-breaker")
 async def circuit_breaker_status(admin: User = Depends(require_admin)):
-    """Get circuit breaker state."""
+    """Get circuit breaker state — per-purpose + global summary."""
+    from app.core.config import load_pipeline_config
     redis = await get_redis()
-    data = await redis.hgetall("nf:pipeline:circuit_breaker")
-    if not data:
-        return {"state": "closed", "consecutiveFailures": 0, "failureThreshold": 5, "recoveryTimeout": 60}
+    states = await cb.get_all_states(redis)
+    config = load_pipeline_config().get("consumer", {})
+    threshold = config.get(
+        "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+    )
+    recovery = config.get(
+        "circuit_breaker_recovery_timeout", cb.DEFAULT_RECOVERY_TIMEOUT,
+    )
+
+    open_purposes = [p for p, s in states.items() if s.get("state") == cb.OPEN]
+    purposes_payload = [
+        {
+            "purpose": p,
+            "state": s.get("state", cb.CLOSED),
+            "consecutiveFailures": int(s.get("consecutive_failures", 0)),
+            "lastFailureTime": float(s.get("last_failure_time", 0)),
+            "lastProbeTime": float(s.get("last_probe_time", 0)),
+            "lastSuccessTime": float(s.get("last_success_time", 0)),
+            "updatedAt": float(s.get("updated_at", 0)),
+        }
+        for p, s in sorted(states.items())
+    ]
     return {
-        "state": data.get("state", "closed"),
-        "consecutiveFailures": int(data.get("consecutive_failures", 0)),
-        "lastFailureTime": float(data.get("last_failure_time", 0)),
-        "updatedAt": data.get("updated_at"),
+        "state": "open" if open_purposes else "closed",
+        "openPurposes": open_purposes,
+        "failureThreshold": threshold,
+        "recoveryTimeout": recovery,
+        "purposes": purposes_payload,
     }
 
 
+class CircuitBreakerResetRequest(CamelModel):
+    purpose: str | None = None
+
+
 @router.post("/circuit-breaker/reset")
-async def reset_circuit_breaker(admin: User = Depends(require_admin)):
-    """Manually reset the circuit breaker and requeue dead-letter articles."""
-    from app.pipeline.circuit_breaker import CircuitBreaker
+async def reset_circuit_breaker(
+    body: CircuitBreakerResetRequest | None = None,
+    admin: User = Depends(require_admin),
+):
+    """Manually reset the circuit breaker (single purpose or all) and
+    requeue dead-letter articles so they get a fresh chance."""
     redis = await get_redis()
-    cb = CircuitBreaker(redis)
-    await cb.reset()
-
-    # Auto-requeue dead-letter articles so they get a fresh chance
+    purpose = body.purpose if body else None
+    await cb.reset(redis, purpose=purpose)
     requeued = await q.requeue_dead_letters(redis)
-
     return {
         "state": "closed",
-        "message": f"Circuit breaker reset, {requeued} dead-letter articles requeued",
+        "message": (
+            f"Reset cb purpose={purpose or 'all'}, "
+            f"{requeued} dead-letter articles requeued"
+        ),
+        "purpose": purpose,
         "requeued": requeued,
     }
 

@@ -14,6 +14,7 @@ interface QueueEvent {
   priority?: string;
   state?: string;                    // circuit breaker state
   consecutive_failures?: string;     // circuit breaker failure count
+  purpose?: string;                  // circuit breaker per-purpose key
   agent_id?: string;
   success?: string;
   tokens_used?: string;
@@ -271,14 +272,47 @@ function applyEvent(
       break;
 
     case "circuit_breaker_open":
-    case "circuit_breaker_half_open":
     case "circuit_breaker_closed":
-    case "circuit_breaker_reset":
+    case "circuit_breaker_reset": {
+      const purpose = event.purpose;
+      const eventState = (event.state ?? "closed") as "open" | "closed";
+      const consecutive = parseInt(event.consecutive_failures ?? "0", 10);
+      const prev = state.circuitBreaker ?? {
+        state: "closed" as const,
+        consecutiveFailures: 0,
+        openPurposes: [],
+        purposes: [],
+      };
+
+      let purposes = prev.purposes ?? [];
+      if (event.type === "circuit_breaker_reset" && !purpose) {
+        // Reset all
+        purposes = purposes.map((p) => ({ ...p, state: "closed", consecutiveFailures: 0 }));
+      } else if (purpose) {
+        const idx = purposes.findIndex((p) => p.purpose === purpose);
+        const existing = idx >= 0 ? purposes[idx] : undefined;
+        const updated = {
+          purpose,
+          state: eventState,
+          consecutiveFailures: consecutive,
+          lastFailureTime: existing?.lastFailureTime ?? 0,
+          lastProbeTime: existing?.lastProbeTime ?? 0,
+          lastSuccessTime: existing?.lastSuccessTime ?? 0,
+        };
+        purposes = idx >= 0
+          ? purposes.map((p, i) => (i === idx ? updated : p))
+          : [...purposes, updated];
+      }
+
+      const openPurposes = purposes.filter((p) => p.state === "open").map((p) => p.purpose);
       next.circuitBreaker = {
-        state: event.state ?? "closed",
-        consecutiveFailures: parseInt(event.consecutive_failures ?? "0", 10),
+        state: openPurposes.length > 0 ? "open" : "closed",
+        consecutiveFailures: Math.max(0, ...purposes.map((p) => p.consecutiveFailures)),
+        openPurposes,
+        purposes,
       };
       break;
+    }
   }
 
   return next;

@@ -24,8 +24,8 @@ import sqlalchemy.exc
 from app.core.config import get_settings, load_pipeline_config
 from app.db.redis import get_redis
 from app.pipeline import agent_queue as aq
+from app.pipeline import circuit_breaker as cb
 from app.pipeline import queue as q
-from app.pipeline.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,13 @@ class PipelineConsumer:
         self._processed = 0
         self._start_time = time.time()
         self._tasks: set[asyncio.Task] = set()
-        self._circuit_breaker: CircuitBreaker | None = None
+        # Circuit-breaker config (state itself lives in Redis — no in-process cache)
+        self._cb_failure_threshold = consumer_config.get(
+            "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+        )
+        self._cb_recovery_timeout = consumer_config.get(
+            "circuit_breaker_recovery_timeout", cb.DEFAULT_RECOVERY_TIMEOUT,
+        )
 
     async def run(self) -> None:
         """Main consumer loop."""
@@ -95,14 +101,8 @@ class PipelineConsumer:
         if recovered:
             logger.warning("Recovered %d in-flight articles from previous crash", recovered)
 
-        # Initialize circuit breaker
-        config = load_pipeline_config()
-        self._circuit_breaker = CircuitBreaker(
-            redis,
-            failure_threshold=config.get("consumer", {}).get("circuit_breaker_failure_threshold", 5),
-            recovery_timeout=config.get("consumer", {}).get("circuit_breaker_recovery_timeout", 60),
-        )
-        await self._circuit_breaker.load_state()
+        # Refresh global cb-open flag from per-purpose state (handles restarts)
+        await cb._refresh_global_open(redis)
 
         # Load agent priority override from Redis
         from app.pipeline.agents.registry import load_priority_override_from_redis
@@ -120,6 +120,7 @@ class PipelineConsumer:
         retry_task = asyncio.create_task(self._retry_poller(redis))
         config_task = asyncio.create_task(self._config_poller(redis))
         story_flusher_task = asyncio.create_task(self._story_batch_flusher(redis))
+        probe_task = asyncio.create_task(self._cb_probe_loop(redis))
 
         try:
             while not self._should_stop():
@@ -128,8 +129,8 @@ class PipelineConsumer:
                     await asyncio.sleep(0.5)
                     continue
 
-                # Circuit breaker check
-                if self._circuit_breaker and not await self._circuit_breaker.on_dequeue_attempt():
+                # Circuit breaker check (any purpose OPEN -> stop dequeueing)
+                if await cb.is_globally_open(redis):
                     await asyncio.sleep(1)
                     continue
 
@@ -178,6 +179,7 @@ class PipelineConsumer:
             retry_task.cancel()
             config_task.cancel()
             story_flusher_task.cancel()
+            probe_task.cancel()
             # Wait for in-flight tasks
             if self._tasks:
                 logger.info("Waiting for %d in-flight tasks...", len(self._tasks))
@@ -216,9 +218,6 @@ class PipelineConsumer:
                 self._story_batch.append(article_id)
                 if len(self._story_batch) >= self._story_batch_size_target:
                     await self._submit_story_group(redis)
-
-            if self._circuit_breaker:
-                await self._circuit_breaker.record_success()
         except asyncio.TimeoutError:
             logger.error(
                 "Article timed out (%ds): %s",
@@ -229,8 +228,6 @@ class PipelineConsumer:
                 await q.mark_failed(redis, article_id, "timeout")
             except Exception:
                 logger.warning("Failed to mark article failed: %s", article_id)
-            if self._circuit_breaker:
-                await self._circuit_breaker.record_failure()
             await self._handle_failure(redis, article_data, "timeout")
         except Exception as e:
             logger.exception(
@@ -255,8 +252,9 @@ class PipelineConsumer:
                     await session.commit()
             except Exception:
                 logger.warning("Failed to update content_status for %s", article_id, exc_info=True)
-            if self._circuit_breaker:
-                await self._circuit_breaker.record_failure()
+            # Pipeline-level LLM failures (classifier/cleaner LLMCallError) are
+            # already attributed to the right purpose at their call sites; this
+            # generic handler doesn't touch the cb.
             await self._handle_failure(redis, article_data, str(e))
         finally:
             self._active_count -= 1
@@ -570,17 +568,52 @@ class PipelineConsumer:
                         "Pipeline %s", "paused" if paused else "resumed"
                     )
 
-                # Sync circuit breaker state (admin may have manually reset)
-                if self._circuit_breaker:
-                    cb_data = await redis.hgetall("nf:pipeline:circuit_breaker")
-                    if cb_data:
-                        redis_state = cb_data.get("state", "closed")
-                        if redis_state == "closed" and self._circuit_breaker.state != "closed":
-                            await self._circuit_breaker.load_state()
-                            logger.info("Circuit breaker synced from Redis: %s", redis_state)
             except Exception:
                 logger.exception("Config poller error")
             await asyncio.sleep(2)
+
+    async def _cb_probe_loop(self, redis) -> None:
+        """Background probe: periodically test OPEN cb purposes with a tiny
+        ``"Hi"`` LLM call. On success, mark CLOSED; on failure, leave OPEN
+        and update last_probe_time so we throttle further probes.
+        """
+        from app.core.llm.gateway import get_llm_gateway
+        from app.core.llm.types import ChatMessage, ChatRequest, LLMCallError
+
+        # First check is staggered so we don't probe immediately on startup
+        await asyncio.sleep(self._cb_recovery_timeout)
+
+        while not self._shutdown:
+            try:
+                open_purposes = await cb.get_open_purposes(redis)
+                for purpose in open_purposes:
+                    if not await cb.should_probe(redis, purpose, self._cb_recovery_timeout):
+                        continue
+                    await cb.mark_probe_attempt(redis, purpose)
+                    logger.info("CB probe: purpose=%s attempting recovery", purpose)
+                    gateway = get_llm_gateway()
+                    request = ChatRequest(
+                        messages=[ChatMessage(role="user", content="Hi")],
+                        max_tokens=5,
+                        temperature=0,
+                    )
+                    try:
+                        await gateway.chat(request, purpose=purpose)
+                        await cb.record_success(redis, purpose)
+                        logger.info("CB probe: purpose=%s recovered", purpose)
+                    except LLMCallError as e:
+                        logger.warning(
+                            "CB probe: purpose=%s still failing: %s",
+                            purpose, str(e.original)[:200],
+                        )
+                    except Exception:
+                        logger.warning(
+                            "CB probe: purpose=%s probe error (non-LLM)",
+                            purpose, exc_info=True,
+                        )
+            except Exception:
+                logger.exception("CB probe loop error")
+            await asyncio.sleep(min(self._cb_recovery_timeout, 30))
 
     async def _retry_poller(self, redis) -> None:
         """Periodically check for due retries."""

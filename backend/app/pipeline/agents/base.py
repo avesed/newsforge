@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.llm.gateway import LLMGateway, get_llm_gateway
-from app.core.llm.types import ChatMessage, ChatRequest
+from app.core.llm.types import ChatMessage, ChatRequest, LLMCallError
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,14 @@ class AgentResult:
     duration_ms: float
     tokens_used: int = 0
     error: str | None = None
+    # Set True when the failure originated from an LLM call (LLMCallError).
+    # The agent_worker uses this to attribute the failure to the circuit breaker.
+    llm_failed: bool = False
+    # Purpose actually used for the LLM call (may differ from agent_id when
+    # the agent calls multiple LLM purposes — though current agents use a
+    # single purpose matching agent_id). Defaults to the agent_id at record
+    # time if not explicitly set.
+    llm_purpose: str | None = None
 
 
 class AgentDefinition:
@@ -133,12 +141,31 @@ class AgentDefinition:
         raise NotImplementedError
 
     async def safe_execute(self, context: AgentContext) -> AgentResult:
-        """Execute with error handling and timing. Never raises."""
+        """Execute with error handling and timing. Never raises.
+
+        On LLMCallError, marks the result with llm_failed=True so the worker
+        can attribute the failure to the circuit breaker.
+        """
         start = time.monotonic()
         try:
             llm = get_llm_gateway()
             result = await self.execute(context, llm)
             return result
+        except LLMCallError as e:
+            duration = (time.monotonic() - start) * 1000
+            logger.warning(
+                "Agent %s LLM call failed for article %s: purpose=%s err=%s",
+                self.agent_id, context.article_id, e.purpose, str(e.original)[:200],
+            )
+            return AgentResult(
+                agent_id=self.agent_id,
+                success=False,
+                data={},
+                duration_ms=duration,
+                error=str(e)[:500],
+                llm_failed=True,
+                llm_purpose=e.purpose or self.agent_id,
+            )
         except Exception as e:
             duration = (time.monotonic() - start) * 1000
             logger.exception("Agent %s failed for article %s", self.agent_id, context.article_id)

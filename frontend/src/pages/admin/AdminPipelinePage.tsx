@@ -177,7 +177,7 @@ function QueueMonitor() {
   });
 
   const resetCBMutation = useMutation({
-    mutationFn: () => resetCircuitBreaker(),
+    mutationFn: (purpose?: string) => resetCircuitBreaker(purpose),
     onSuccess: () => refresh(),
   });
 
@@ -373,35 +373,61 @@ function QueueMonitor() {
         </div>
       )}
 
-      {/* Circuit breaker banner */}
+      {/* Circuit breaker banner — per-purpose */}
       {queue.circuitBreaker?.state === "open" && (
-        <div className="flex items-center gap-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          <span className="flex-1">
-            {t("admin.queue.circuitBreakerOpen", {
-              defaultValue:
-                "Circuit breaker OPEN — pipeline paused due to {{count}} consecutive failures. LLM provider may be down.",
-              count: queue.circuitBreaker.consecutiveFailures,
-            })}
-          </span>
-          <button
-            onClick={() => resetCBMutation.mutate()}
-            disabled={resetCBMutation.isPending}
-            className="shrink-0 rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
-          >
-            {resetCBMutation.isPending
-              ? t("common.resetting", "Resetting...")
-              : t("common.reset", "Reset")}
-          </button>
-        </div>
-      )}
-      {queue.circuitBreaker?.state === "half_open" && (
-        <div className="flex items-center gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-400">
-          <AlertTriangle className="h-4 w-4 shrink-0" />
-          {t(
-            "admin.queue.circuitBreakerHalfOpen",
-            "Circuit breaker probing — testing if LLM provider has recovered...",
-          )}
+        <div className="space-y-2 rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-400">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="flex-1">
+              {t("admin.queue.circuitBreakerOpen", {
+                defaultValue:
+                  "Circuit breaker OPEN — pipeline paused. Failing purposes: {{purposes}}",
+                purposes:
+                  (queue.circuitBreaker.openPurposes ?? []).join(", ") ||
+                  "unknown",
+              })}
+            </span>
+            <button
+              onClick={() => resetCBMutation.mutate(undefined)}
+              disabled={resetCBMutation.isPending}
+              className="shrink-0 rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
+            >
+              {resetCBMutation.isPending
+                ? t("common.resetting", "Resetting...")
+                : t("admin.queue.resetAll", "Reset all")}
+            </button>
+          </div>
+          {queue.circuitBreaker.purposes &&
+            queue.circuitBreaker.purposes.length > 0 && (
+              <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 md:grid-cols-4">
+                {queue.circuitBreaker.purposes.map((p) => (
+                  <div
+                    key={p.purpose}
+                    className={`flex items-center justify-between rounded border px-2 py-1 ${
+                      p.state === "open"
+                        ? "border-red-300 bg-red-100/60 dark:border-red-700 dark:bg-red-900/40"
+                        : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400"
+                    }`}
+                  >
+                    <span className="truncate font-mono">{p.purpose}</span>
+                    <span className="ml-2 shrink-0">
+                      {p.state === "open"
+                        ? `✗ ${p.consecutiveFailures}`
+                        : "✓"}
+                    </span>
+                    {p.state === "open" && (
+                      <button
+                        onClick={() => resetCBMutation.mutate(p.purpose)}
+                        disabled={resetCBMutation.isPending}
+                        className="ml-2 shrink-0 rounded bg-red-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-red-700 disabled:opacity-50 dark:bg-red-700 dark:hover:bg-red-600"
+                      >
+                        {t("common.reset", "Reset")}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
         </div>
       )}
 

@@ -403,6 +403,23 @@ export interface QueueArticle {
   current_agent?: string;
 }
 
+export interface CircuitBreakerPurposeState {
+  purpose: string;
+  state: "open" | "closed";
+  consecutiveFailures: number;
+  lastFailureTime: number;
+  lastProbeTime: number;
+  lastSuccessTime: number;
+  updatedAt?: number;
+}
+
+export interface CircuitBreakerStatus {
+  state: "open" | "closed";
+  consecutiveFailures: number;
+  openPurposes: string[];
+  purposes: CircuitBreakerPurposeState[];
+}
+
 export interface QueueStatus {
   queued: QueueArticle[];
   queued_high?: QueueArticle[];
@@ -412,7 +429,7 @@ export interface QueueStatus {
   counts: { queued: number; queued_high?: number; queued_low?: number; processing: number; completed: number; failed: number; dead_letter: number; retry: number };
   concurrency: { active: number; target: number };
   paused: boolean;
-  circuitBreaker?: { state: string; consecutiveFailures: number };
+  circuitBreaker?: CircuitBreakerStatus;
 }
 
 export async function getQueueStatus(): Promise<QueueStatus> {
@@ -461,13 +478,18 @@ export async function resumePipeline() {
   return res.data;
 }
 
-export async function getCircuitBreakerStatus() {
+export async function getCircuitBreakerStatus(): Promise<
+  CircuitBreakerStatus & { failureThreshold: number; recoveryTimeout: number }
+> {
   const res = await apiClient.get("/admin/pipeline/circuit-breaker");
   return res.data;
 }
 
-export async function resetCircuitBreaker() {
-  const res = await apiClient.post("/admin/pipeline/circuit-breaker/reset");
+export async function resetCircuitBreaker(purpose?: string) {
+  const res = await apiClient.post(
+    "/admin/pipeline/circuit-breaker/reset",
+    purpose ? { purpose } : {},
+  );
   return res.data;
 }
 

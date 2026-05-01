@@ -201,13 +201,18 @@ class FinanceAnalyzerAgent(AgentDefinition):
     async def execute(self, context: AgentContext, llm: LLMGateway) -> AgentResult:
         start = time.monotonic()
 
+        from app.core.llm.types import LLMCallError
         try:
             data, tokens = await self._cached_json_call(
                 llm, context, _TASK_PROMPT, purpose="finance_analyzer",
             )
+        except LLMCallError:
+            # LLM-attributable failure — let safe_execute mark llm_failed and
+            # propagate to the circuit breaker.
+            raise
         except Exception as e:
             logger.error(
-                "Finance analyzer LLM call failed for article %s: %s",
+                "Finance analyzer post-LLM failure for article %s: %s",
                 context.article_id, e,
             )
             return AgentResult(

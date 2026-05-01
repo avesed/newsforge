@@ -25,6 +25,7 @@ from app.core.llm.types import (
     ChatResponse,
     EmbedRequest,
     EmbedResponse,
+    LLMCallError,
     StreamEvent,
     TokenUsage,
 )
@@ -496,7 +497,7 @@ class LLMGateway:
                 )
                 if attempt < max_retries:
                     continue
-                raise last_error
+                raise LLMCallError(purpose, last_error) from last_error
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:
@@ -511,10 +512,12 @@ class LLMGateway:
                     "LLM chat request failed (model=%s, purpose=%s, attempts=%d)",
                     model, purpose, attempt + 1,
                 )
-                raise
+                if isinstance(e, LLMCallError):
+                    raise
+                raise LLMCallError(purpose, e) from e
         # Should not reach here, but just in case
         if last_error:
-            raise last_error
+            raise LLMCallError(purpose, last_error) from last_error
         raise RuntimeError("Unreachable: retry loop exited without result or error")
 
     async def _non_streaming_chat(
@@ -796,9 +799,11 @@ class LLMGateway:
                     total_tokens=usage.total_tokens if usage else 0,
                 ),
             )
-        except Exception:
+        except Exception as e:
             logger.exception("Embedding request failed (model=%s)", model)
-            raise
+            if isinstance(e, LLMCallError):
+                raise
+            raise LLMCallError("embedding", e) from e
 
     async def is_configured(self) -> bool:
         """Check if any LLM provider is configured (DB or env)."""

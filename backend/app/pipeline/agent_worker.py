@@ -18,6 +18,7 @@ import time
 from app.core.config import load_pipeline_config
 from app.db.redis import get_redis
 from app.pipeline import agent_queue as aq
+from app.pipeline import circuit_breaker as cb
 from app.pipeline.agents.base import AgentContext, AgentResult
 from app.pipeline.agents.registry import get_agent_registry
 from app.pipeline.events import record_event
@@ -34,7 +35,35 @@ def _serialize_agent_result(result: AgentResult) -> dict:
         "tokens_used": result.tokens_used,
         "error": result.error,
         "data": result.data,
+        "llm_failed": result.llm_failed,
+        "llm_purpose": result.llm_purpose,
     }
+
+
+def _cb_threshold() -> int:
+    config = load_pipeline_config()
+    return config.get("consumer", {}).get(
+        "circuit_breaker_failure_threshold", cb.DEFAULT_FAILURE_THRESHOLD,
+    )
+
+
+async def _record_cb(redis, result: AgentResult) -> None:
+    """Update circuit breaker based on an AgentResult.
+
+    LLM-attributable failure -> record_failure on the LLM purpose used.
+    Successful execution     -> record_success on the agent_id (assumes the
+                                agent's primary LLM purpose == agent_id).
+    Non-LLM failure          -> no-op (don't pollute the cb with parse errors,
+                                business-logic mismatches, or DB issues).
+    """
+    try:
+        if result.success:
+            await cb.record_success(redis, result.agent_id)
+        elif result.llm_failed:
+            purpose = result.llm_purpose or result.agent_id
+            await cb.record_failure(redis, purpose, failure_threshold=_cb_threshold())
+    except Exception:
+        logger.warning("Circuit breaker record failed for agent=%s", result.agent_id, exc_info=True)
 
 
 async def _persist_and_emit(redis, article_id: str, agent_id: str, serialized: dict) -> None:
@@ -312,6 +341,8 @@ class AgentWorker:
                     results[res.agent_id] = serialized
                     # Per-agent persist + emit
                     await _persist_and_emit(redis, context.article_id, res.agent_id, serialized)
+                    # Update circuit breaker (only for LLM successes / LLM failures)
+                    await _record_cb(redis, res)
                     # Record pipeline event (existing)
                     try:
                         await record_event(
@@ -361,6 +392,7 @@ class AgentWorker:
                 serialized = _serialize_agent_result(result)
                 results[result.agent_id] = serialized
                 await _persist_and_emit(redis, context.article_id, result.agent_id, serialized)
+                await _record_cb(redis, result)
 
                 # Record pipeline event (best-effort)
                 try:

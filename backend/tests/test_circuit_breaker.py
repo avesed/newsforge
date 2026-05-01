@@ -1,30 +1,19 @@
-"""Circuit breaker tests — reproduces the HALF_OPEN deadlock bug and verifies the fix.
+"""Per-purpose circuit breaker tests.
 
-Bug scenario:
-  1. Failures exceed threshold → OPEN
-  2. Recovery timeout elapses → OPEN→HALF_OPEN, one probe allowed
-  3. Consumer restarts mid-probe (or probe result lost)
-  4. New consumer loads HALF_OPEN from Redis
-  5. OLD CODE: on_dequeue_attempt() returns False forever → deadlock
-  6. FIX: after recovery_timeout elapses again, a re-probe is allowed
+The cb is now Redis-backed and stateless (no class), with per-purpose state
+keyed by agent_id / system purpose. Probe-based recovery is driven by an
+external probe task in the consumer (not tested here — that test belongs
+with the consumer).
 """
 
 from __future__ import annotations
 
-import asyncio
-import time
 from unittest.mock import AsyncMock, patch
 
 import fakeredis.aioredis
 import pytest
 
-from app.pipeline.circuit_breaker import (
-    CB_STATE_KEY,
-    CLOSED,
-    HALF_OPEN,
-    OPEN,
-    CircuitBreaker,
-)
+from app.pipeline import circuit_breaker as cb
 
 
 @pytest.fixture
@@ -32,215 +21,196 @@ def redis():
     return fakeredis.aioredis.FakeRedis(decode_responses=True)
 
 
-@pytest.fixture
-def cb(redis):
-    return CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
+def _patch_emit():
+    return patch.object(cb, "_emit_event", new_callable=AsyncMock)
 
 
 def _patch_time(ts: float):
     return patch("app.pipeline.circuit_breaker.time.time", return_value=ts)
 
 
-def _patch_emit():
-    return patch.object(CircuitBreaker, "_emit_event", new_callable=AsyncMock)
-
-
-# ── Basic lifecycle ──────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_closed_allows_requests(cb):
-    assert cb.state == CLOSED
-    assert await cb.on_dequeue_attempt() is True
+# ── Per-purpose lifecycle ───────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_failures_open_breaker(cb):
-    """3 consecutive failures → OPEN."""
+async def test_initial_state_closed(redis):
+    state = await cb.get_state(redis, "summarizer")
+    assert state["state"] == cb.CLOSED
+    assert state["consecutive_failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_failures_open_breaker_for_purpose(redis):
     with _patch_emit(), _patch_time(1000.0):
         for _ in range(3):
-            await cb.record_failure()
-    assert cb.state == OPEN
+            await cb.record_failure(redis, "summarizer", failure_threshold=3)
+    state = await cb.get_state(redis, "summarizer")
+    assert state["state"] == cb.OPEN
+    assert state["consecutive_failures"] == 3
 
 
 @pytest.mark.asyncio
-async def test_open_blocks_requests(cb, redis):
+async def test_failures_only_affect_named_purpose(redis):
+    """summarizer failures must NOT trip translator's cb."""
+    with _patch_emit(), _patch_time(1000.0):
+        for _ in range(5):
+            await cb.record_failure(redis, "summarizer", failure_threshold=3)
+
+    sum_state = await cb.get_state(redis, "summarizer")
+    tr_state = await cb.get_state(redis, "translator")
+    assert sum_state["state"] == cb.OPEN
+    assert tr_state["state"] == cb.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_global_open_when_any_purpose_open(redis):
+    assert await cb.is_globally_open(redis) is False
+
     with _patch_emit(), _patch_time(1000.0):
         for _ in range(3):
-            await cb.record_failure()
+            await cb.record_failure(redis, "entity", failure_threshold=3)
 
-    # Still within recovery_timeout (t=1005 < 1000+10)
+    assert await cb.is_globally_open(redis) is True
+
+
+@pytest.mark.asyncio
+async def test_global_clears_when_last_purpose_recovers(redis):
+    with _patch_emit(), _patch_time(1000.0):
+        for _ in range(3):
+            await cb.record_failure(redis, "entity", failure_threshold=3)
+        for _ in range(3):
+            await cb.record_failure(redis, "summarizer", failure_threshold=3)
+
+    assert await cb.is_globally_open(redis) is True
+
+    with _patch_emit():
+        await cb.record_success(redis, "entity")
+    # summarizer still OPEN -> still globally open
+    assert await cb.is_globally_open(redis) is True
+
+    with _patch_emit():
+        await cb.record_success(redis, "summarizer")
+    # both CLOSED -> globally CLOSED
+    assert await cb.is_globally_open(redis) is False
+
+
+@pytest.mark.asyncio
+async def test_success_resets_consecutive_failures(redis):
+    with _patch_emit(), _patch_time(1000.0):
+        await cb.record_failure(redis, "translator", failure_threshold=5)
+        await cb.record_failure(redis, "translator", failure_threshold=5)
+    state = await cb.get_state(redis, "translator")
+    assert state["consecutive_failures"] == 2
+    assert state["state"] == cb.CLOSED  # below threshold
+
+    with _patch_emit():
+        await cb.record_success(redis, "translator")
+    state = await cb.get_state(redis, "translator")
+    assert state["consecutive_failures"] == 0
+
+
+@pytest.mark.asyncio
+async def test_success_recovers_open_purpose(redis):
+    with _patch_emit(), _patch_time(1000.0):
+        for _ in range(3):
+            await cb.record_failure(redis, "finance_analyzer", failure_threshold=3)
+    assert (await cb.get_state(redis, "finance_analyzer"))["state"] == cb.OPEN
+
+    with _patch_emit():
+        await cb.record_success(redis, "finance_analyzer")
+    state = await cb.get_state(redis, "finance_analyzer")
+    assert state["state"] == cb.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_should_probe_throttle(redis):
+    """should_probe() returns False until recovery_timeout elapses."""
+    with _patch_emit(), _patch_time(1000.0):
+        for _ in range(3):
+            await cb.record_failure(redis, "classifier", failure_threshold=3)
+
+    # Within recovery window
     with _patch_time(1005.0):
-        assert await cb.on_dequeue_attempt() is False
+        assert await cb.should_probe(redis, "classifier", recovery_timeout=10) is False
 
-
-@pytest.mark.asyncio
-async def test_open_to_half_open_probe(cb, redis):
-    """After recovery_timeout, OPEN → HALF_OPEN and one probe is allowed."""
-    with _patch_emit(), _patch_time(1000.0):
-        for _ in range(3):
-            await cb.record_failure()
-
-    with _patch_emit(), _patch_time(1011.0):
-        assert await cb.on_dequeue_attempt() is True
-        assert cb.state == HALF_OPEN
-        # Second call in HALF_OPEN should block (probe in flight)
-        assert await cb.on_dequeue_attempt() is False
-
-
-@pytest.mark.asyncio
-async def test_half_open_probe_success_closes(cb):
-    """Successful probe in HALF_OPEN → CLOSED."""
-    with _patch_emit(), _patch_time(1000.0):
-        for _ in range(3):
-            await cb.record_failure()
-
-    with _patch_emit(), _patch_time(1011.0):
-        await cb.on_dequeue_attempt()  # → HALF_OPEN
-        await cb.record_success()
-        assert cb.state == CLOSED
-        assert cb.consecutive_failures == 0
-
-
-@pytest.mark.asyncio
-async def test_half_open_probe_failure_reopens(cb):
-    """Failed probe in HALF_OPEN → back to OPEN."""
-    with _patch_emit(), _patch_time(1000.0):
-        for _ in range(3):
-            await cb.record_failure()
-
-    with _patch_emit(), _patch_time(1011.0):
-        await cb.on_dequeue_attempt()  # → HALF_OPEN
-
-    with _patch_emit(), _patch_time(1012.0):
-        await cb.record_failure()
-        assert cb.state == OPEN
-
-
-# ── Bug reproduction: HALF_OPEN deadlock after consumer restart ──
-
-@pytest.mark.asyncio
-async def test_half_open_deadlock_after_restart(redis):
-    """REPRODUCTION: Consumer restart with HALF_OPEN in Redis → stuck forever (old bug).
-
-    This test verifies the fix: after recovery_timeout elapses, a re-probe
-    is allowed even when the state was loaded as HALF_OPEN.
-    """
-    # Phase 1: First consumer trips the breaker and transitions to HALF_OPEN
-    cb1 = CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
-    with _patch_emit(), _patch_time(1000.0):
-        for _ in range(3):
-            await cb1.record_failure()
-    assert cb1.state == OPEN
-
-    with _patch_emit(), _patch_time(1011.0):
-        allowed = await cb1.on_dequeue_attempt()
-        assert allowed is True
-        assert cb1.state == HALF_OPEN
-
-    # Phase 2: Consumer "restarts" — new instance loads state from Redis
-    cb2 = CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
-    await cb2.load_state()
-    assert cb2.state == HALF_OPEN, "Loaded HALF_OPEN from Redis"
-
-    # Immediately after restart: should still block (within recovery_timeout of probe)
-    # last_probe_time was ~1011 when HALF_OPEN entered, recovery_timeout=10
+    # Past recovery window — first probe allowed
     with _patch_time(1015.0):
-        assert await cb2.on_dequeue_attempt() is False, \
-            "Should block within recovery_timeout of last probe"
+        assert await cb.should_probe(redis, "classifier", recovery_timeout=10) is True
 
-    # After recovery_timeout from probe time: FIX allows re-probe
-    with _patch_time(1025.0):
-        result = await cb2.on_dequeue_attempt()
-        assert result is True, \
-            "FIX: should allow re-probe after recovery_timeout elapses in HALF_OPEN"
+    # mark probe attempt — next call within window blocks again
+    with _patch_time(1015.0):
+        await cb.mark_probe_attempt(redis, "classifier")
 
-    # And that re-probe succeeding should close the breaker
-    with _patch_emit():
-        await cb2.record_success()
-    assert cb2.state == CLOSED
+    with _patch_time(1020.0):
+        assert await cb.should_probe(redis, "classifier", recovery_timeout=10) is False
+
+    with _patch_time(1030.0):
+        assert await cb.should_probe(redis, "classifier", recovery_timeout=10) is True
 
 
 @pytest.mark.asyncio
-async def test_half_open_reprobe_on_failure_cycles(redis):
-    """After restart in HALF_OPEN, failed re-probes cycle OPEN→HALF_OPEN→OPEN...
-    until one succeeds.
-    """
-    # Setup: stuck in HALF_OPEN
-    cb = CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
+async def test_should_probe_only_open(redis):
+    """CLOSED purposes are never probed."""
+    with _patch_time(1000.0):
+        assert await cb.should_probe(redis, "summarizer", recovery_timeout=10) is False
+
+
+@pytest.mark.asyncio
+async def test_get_open_purposes(redis):
     with _patch_emit(), _patch_time(1000.0):
         for _ in range(3):
-            await cb.record_failure()
+            await cb.record_failure(redis, "entity", failure_threshold=3)
+        await cb.record_failure(redis, "summarizer", failure_threshold=3)  # 1 failure, CLOSED
 
-    with _patch_emit(), _patch_time(1011.0):
-        await cb.on_dequeue_attempt()  # → HALF_OPEN
+    open_p = await cb.get_open_purposes(redis)
+    assert open_p == ["entity"]
 
-    # Simulate restart
-    cb2 = CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
-    await cb2.load_state()
-    assert cb2.state == HALF_OPEN
-
-    # Re-probe allowed after timeout, but probe fails → back to OPEN
-    with _patch_emit(), _patch_time(1022.0):
-        assert await cb2.on_dequeue_attempt() is True
-
-    with _patch_emit(), _patch_time(1023.0):
-        await cb2.record_failure()
-        assert cb2.state == OPEN
-
-    # Next cycle: OPEN → timeout → HALF_OPEN → probe allowed
-    with _patch_emit(), _patch_time(1034.0):
-        assert await cb2.on_dequeue_attempt() is True
-        assert cb2.state == HALF_OPEN
-
-    # This time probe succeeds
-    with _patch_emit():
-        await cb2.record_success()
-    assert cb2.state == CLOSED
-
-
-# ── Redis persistence ────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_state_persisted_to_redis(cb, redis):
-    """State changes are persisted and loadable by a new instance."""
+async def test_reset_single_purpose(redis):
     with _patch_emit(), _patch_time(1000.0):
         for _ in range(3):
-            await cb.record_failure()
+            await cb.record_failure(redis, "entity", failure_threshold=3)
+        for _ in range(3):
+            await cb.record_failure(redis, "translator", failure_threshold=3)
 
-    data = await redis.hgetall(CB_STATE_KEY)
-    assert data["state"] == OPEN
-    assert data["consecutive_failures"] == "3"
+    with _patch_emit(), patch("app.pipeline.queue.requeue_dead_letters",
+                              new_callable=AsyncMock, return_value=0):
+        await cb.reset(redis, purpose="entity")
 
-    cb2 = CircuitBreaker(redis, failure_threshold=3, recovery_timeout=10)
-    await cb2.load_state()
-    assert cb2.state == OPEN
-    assert cb2.consecutive_failures == 3
+    assert (await cb.get_state(redis, "entity"))["state"] == cb.CLOSED
+    assert (await cb.get_state(redis, "translator"))["state"] == cb.OPEN
+    assert await cb.is_globally_open(redis) is True
 
 
 @pytest.mark.asyncio
-async def test_manual_reset(cb, redis):
+async def test_reset_all_purposes(redis):
     with _patch_emit(), _patch_time(1000.0):
         for _ in range(3):
-            await cb.record_failure()
-    assert cb.state == OPEN
+            await cb.record_failure(redis, "entity", failure_threshold=3)
+        for _ in range(3):
+            await cb.record_failure(redis, "translator", failure_threshold=3)
 
     with _patch_emit():
-        await cb.reset()
-    assert cb.state == CLOSED
-    assert cb.consecutive_failures == 0
+        await cb.reset(redis)
 
-    data = await redis.hgetall(CB_STATE_KEY)
-    assert data["state"] == CLOSED
+    states = await cb.get_all_states(redis)
+    assert states == {}
+    assert await cb.is_globally_open(redis) is False
+
+
+# ── Redis persistence ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_success_resets_failure_count(cb):
-    """Successes in CLOSED state reset the consecutive failure counter."""
+async def test_state_survives_process_restart(redis):
+    """Redis is the source of truth — a fresh process sees prior state."""
     with _patch_emit(), _patch_time(1000.0):
-        await cb.record_failure()
-        await cb.record_failure()
-    assert cb.consecutive_failures == 2
+        for _ in range(3):
+            await cb.record_failure(redis, "summarizer", failure_threshold=3)
 
-    await cb.record_success()
-    assert cb.consecutive_failures == 0
-    assert cb.state == CLOSED
+    # Simulate restart: nothing to do — state lives entirely in Redis
+    state = await cb.get_state(redis, "summarizer")
+    assert state["state"] == cb.OPEN
+    assert state["consecutive_failures"] == 3
+    assert await cb.is_globally_open(redis) is True

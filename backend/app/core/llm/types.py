@@ -71,3 +71,17 @@ class LLMProviderConfig:
     api_base: str
     default_model: str
     models: dict[str, str] = field(default_factory=dict)  # purpose → model name
+
+
+class LLMCallError(Exception):
+    """Wraps any exception raised inside gateway.chat()/embed() — used by the
+    circuit breaker to attribute failures to a specific LLM purpose/agent.
+
+    `purpose` is the agent_id or system purpose (classifier, cleaner, ...).
+    `original` is the underlying exception.
+    """
+
+    def __init__(self, purpose: str | None, original: BaseException):
+        self.purpose = purpose or "unknown"
+        self.original = original
+        super().__init__(f"LLM call failed (purpose={self.purpose}): {original}")
