@@ -356,6 +356,20 @@ class LLMGateway:
         return self._env_client, settings.openai_model, "text-embedding-3-small"
 
     @staticmethod
+    def _serialize_message(m: ChatMessage) -> dict[str, Any]:
+        """Convert a ChatMessage to an OpenAI-compatible dict.
+
+        Handles tool-role messages (with tool_call_id) and assistant messages
+        that carry tool_calls (content may be None).
+        """
+        msg: dict[str, Any] = {"role": m.role, "content": m.content}
+        if m.tool_calls is not None:
+            msg["tool_calls"] = m.tool_calls
+        if m.tool_call_id is not None:
+            msg["tool_call_id"] = m.tool_call_id
+        return msg
+
+    @staticmethod
     def _apply_profile(
         request: ChatRequest,
         extra_params: dict,
@@ -430,9 +444,7 @@ class LLMGateway:
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": [
-                {"role": m.role, "content": m.content} for m in request.messages
-            ],
+            "messages": [self._serialize_message(m) for m in request.messages],
         }
 
         # Apply profile + request overrides
@@ -563,6 +575,8 @@ class LLMGateway:
         async def _collect() -> ChatResponse:
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
+            # Tool call accumulator: index -> {id, type, function: {name, arguments}}
+            tc_accum: dict[int, dict[str, Any]] = {}
             resp_model = model
             finish_reason = "stop"
             usage_data = None
@@ -580,6 +594,26 @@ class LLMGateway:
                         )
                         if r:
                             reasoning_parts.append(r)
+                        # Tool call deltas
+                        if delta.tool_calls:
+                            for tc_delta in delta.tool_calls:
+                                idx = tc_delta.index
+                                if idx not in tc_accum:
+                                    tc_accum[idx] = {
+                                        "id": "",
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                entry = tc_accum[idx]
+                                if tc_delta.id:
+                                    entry["id"] = tc_delta.id
+                                if tc_delta.type:
+                                    entry["type"] = tc_delta.type
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        entry["function"]["name"] += tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        entry["function"]["arguments"] += tc_delta.function.arguments
                         if chunk.choices[0].finish_reason:
                             finish_reason = chunk.choices[0].finish_reason
                     if chunk.model:
@@ -592,28 +626,35 @@ class LLMGateway:
             content = "".join(content_parts)
             reasoning = "".join(reasoning_parts)
 
+            # Build tool_calls list from accumulated deltas
+            tool_calls: list[dict] | None = None
+            if tc_accum:
+                tool_calls = [tc_accum[idx] for idx in sorted(tc_accum.keys())]
+
             # Log empty content — do NOT try to extract from reasoning,
             # as thinking content is unreliable for structured output.
-            if not content and reasoning:
-                logger.warning(
-                    "LLM streaming response content empty but reasoning present "
-                    "(model=%s, purpose=%s, finish=%s, reasoning_len=%d). "
-                    "Likely enable_thinking is not working — check vLLM "
-                    "chat template or provider config.",
-                    resp_model, purpose, finish_reason, len(reasoning),
-                )
-            elif not content:
-                logger.warning(
-                    "LLM streaming response content empty "
-                    "(model=%s, purpose=%s, finish=%s)",
-                    resp_model, purpose, finish_reason,
-                )
+            if not content and not tool_calls:
+                if reasoning:
+                    logger.warning(
+                        "LLM streaming response content empty but reasoning present "
+                        "(model=%s, purpose=%s, finish=%s, reasoning_len=%d). "
+                        "Likely enable_thinking is not working — check vLLM "
+                        "chat template or provider config.",
+                        resp_model, purpose, finish_reason, len(reasoning),
+                    )
+                else:
+                    logger.warning(
+                        "LLM streaming response content empty "
+                        "(model=%s, purpose=%s, finish=%s)",
+                        resp_model, purpose, finish_reason,
+                    )
 
             total_tokens = usage_data.total_tokens if usage_data else 0
             logger.info(
                 "LLM response (streamed): model=%s purpose=%s tokens=%d "
-                "finish=%s content_len=%d",
+                "finish=%s content_len=%d tool_calls=%d",
                 resp_model, purpose, total_tokens, finish_reason, len(content),
+                len(tool_calls) if tool_calls else 0,
             )
 
             return ChatResponse(
@@ -634,7 +675,7 @@ class LLMGateway:
                         else 0
                     ),
                 ),
-                tool_calls=None,  # Pipeline agents don't use tool_calls
+                tool_calls=tool_calls,
                 finish_reason=finish_reason or "stop",
             )
 
@@ -721,9 +762,7 @@ class LLMGateway:
 
         kwargs: dict[str, Any] = {
             "model": model,
-            "messages": [
-                {"role": m.role, "content": m.content} for m in request.messages
-            ],
+            "messages": [self._serialize_message(m) for m in request.messages],
             "stream": True,
             "stream_options": {"include_usage": True},
         }

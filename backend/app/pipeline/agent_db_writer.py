@@ -163,6 +163,8 @@ async def finalize_merged_fields(
             finance_meta["financial_entities"] = fd["financial_entities"]
         if fd.get("sectors"):
             finance_meta["sectors"] = fd["sectors"]
+        if fd.get("related_symbols"):
+            finance_meta["related_symbols"] = fd["related_symbols"]
         if fd.get("policy_analysis"):
             finance_meta["policy_analysis"] = fd["policy_analysis"]
 
@@ -239,6 +241,8 @@ async def finalize_p2_merged_fields(
             finance_meta["financial_entities"] = fd["financial_entities"]
         if fd.get("sectors"):
             finance_meta["sectors"] = fd["sectors"]
+        if fd.get("related_symbols"):
+            finance_meta["related_symbols"] = fd["related_symbols"]
         if fd.get("policy_analysis"):
             finance_meta["policy_analysis"] = fd["policy_analysis"]
 

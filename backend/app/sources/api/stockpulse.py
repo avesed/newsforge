@@ -51,6 +51,25 @@ def _parse_iso(value: Any) -> datetime | None:
         return None
 
 
+_search_client: StockPulseSource | None = None
+
+
+async def search_stock_profiles(
+    query: str,
+    market: str | None = None,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Module-level convenience for searching StockPulse stock profiles.
+
+    Used by the finance_analyzer agent's tool-call handler. Lazily
+    initializes a shared StockPulseSource instance.
+    """
+    global _search_client
+    if _search_client is None:
+        _search_client = StockPulseSource.from_settings()
+    return await _search_client.search_profiles(query, market=market, limit=limit)
+
+
 class StockPulseSource:
     """StockPulse fan-out news source.
 
@@ -257,6 +276,43 @@ class StockPulseSource:
                 symbol, len(items), by_source,
             )
         return out
+
+    async def search_profiles(
+        self,
+        query: str,
+        market: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search stock profiles on StockPulse.
+
+        Calls GET /api/v1/data/reference/profiles/search. Returns a list of
+        profile dicts with: symbol, market, name, name_zh, sector, industry.
+        Returns empty list on any error (never raises).
+        """
+        await self._refresh_runtime_overrides()
+        if not self.is_configured:
+            return []
+
+        qs: dict[str, Any] = {"q": query, "limit": limit}
+        if market:
+            qs["market"] = market
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(
+                    f"{self._base_url}/api/v1/data/reference/profiles/search",
+                    params=qs,
+                    headers=self._headers(),
+                )
+                resp.raise_for_status()
+                body = resp.json() or {}
+                if not body.get("success", True):
+                    logger.warning("StockPulse profile search failed: %s", body.get("error"))
+                    return []
+                return body.get("data") or []
+        except Exception:
+            logger.warning("StockPulse profile search error for q=%r", query, exc_info=True)
+            return []
 
     @staticmethod
     def _normalize(

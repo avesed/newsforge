@@ -5,6 +5,7 @@ financial analyst perspective. Outputs:
 - Sentiment (score, label, finance-specific bullish/bearish)
 - Financial entities (companies, funds, government bodies mentioned)
 - Sectors (stock market sectors related to the article)
+- Related symbols (resolved via StockPulse profile search tool call)
 - Analysis report (Markdown, from a financial analyst viewpoint)
 
 Results are cached in ai_analysis to avoid duplicate generation.
@@ -13,12 +14,15 @@ Only runs when ai_analysis is not already populated.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
+from typing import Any
 
 from app.core.llm.gateway import LLMGateway
-from app.pipeline.agents.base import AgentContext, AgentDefinition, AgentResult
+from app.core.llm.types import ChatMessage, ChatRequest, ChatResponse
+from app.pipeline.agents.base import AgentContext, AgentDefinition, AgentResult, robust_json_loads
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +50,46 @@ _VAGUE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Max tool call rounds to prevent infinite loops
+_MAX_TOOL_ROUNDS = 3
+
+# Tool definition for stock profile search
+_STOCK_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_stock_profiles",
+        "description": (
+            "在股票档案数据库中搜索股票。可按公司名、行业、板块关键词搜索。"
+            "返回匹配的股票代码(symbol)、名称、市场、行业等信息。"
+            "例如搜索'石油'可找到中国石油、中国石化等；搜索'Apple'可找到AAPL。"
+            "可多次调用以搜索不同关键词或市场。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词：公司名(Apple/苹果)、行业(半导体)、板块(石油石化)等",
+                },
+                "market": {
+                    "type": "string",
+                    "enum": ["us", "hk", "sh", "sz"],
+                    "description": "可选，限定搜索市场: us=美股, hk=港股, sh=沪市, sz=深市",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 _TASK_PROMPT = """\
 你是一名资深金融分析师。请从金融投资视角分析上述新闻，完成以下任务，输出严格JSON。
+
+**重要**：你可以使用 `search_stock_profiles` 工具搜索股票档案数据库，查找与新闻相关的股票代码。
+- 如果新闻提到了具体公司，搜索该公司名称获取准确的股票代码
+- 如果新闻涉及某个行业/板块（如石油、半导体），搜索该行业找到相关股票
+- 如果新闻非金融相关或无法关联到具体股票，可以不搜索
+- 搜索后，将找到的相关股票填入 related_symbols 字段
 
 ## 1. 情感分析
 - sentiment_score: -1.0 到 1.0
@@ -78,7 +120,16 @@ _TASK_PROMPT = """\
 SaaS、网络安全、机器人、量子计算
 非金融/商业新闻返回空数组。
 
-## 4. 政策分析 (policy_analysis) — 仅政策/政治相关新闻需要填写
+## 4. 相关股票 (related_symbols)
+基于你的分析和搜索结果，列出与本新闻直接相关的股票（上限5个）。
+每个股票：
+- symbol: 股票代码（如 "AAPL"、"600519.SS"、"00700.HK"）
+- market: 市场（us / sh / sz / hk）
+- name: 股票名称
+- relevance: direct（直接相关）/ indirect（间接相关，如上下游、竞品）
+非金融新闻或无法关联到具体股票时返回空数组。
+
+## 5. 政策分析 (policy_analysis) — 仅政策/政治相关新闻需要填写
 如果新闻涉及政策、法规、政府行为、监管变化，则填写此字段，否则填 null。
 - policy_type: 财政/货币/产业/贸易/外交/监管/社会
 - target_sectors: 受影响的行业列表
@@ -87,7 +138,7 @@ SaaS、网络安全、机器人、量子计算
 - certainty: 已确定/大概率/存在不确定性
 - market_implications: 对股市/债市/汇率的影响（原文有提及时填写）
 
-## 5. 金融分析报告 (analysis_report)
+## 6. 金融分析报告 (analysis_report)
 用Markdown撰写一份**金融视角**的分析报告。
 
 报告结构（按需增减章节，信息不足时缩减）：
@@ -131,6 +182,10 @@ SaaS、网络安全、机器人、量子计算
     {"name": "Hims & Hers Health", "type": "company", "relation": "competitor", "confidence": 0.8}
   ],
   "sectors": ["医药", "互联网", "零售"],
+  "related_symbols": [
+    {"symbol": "AMZN", "market": "us", "name": "Amazon.com Inc", "relevance": "direct"},
+    {"symbol": "HIMS", "market": "us", "name": "Hims & Hers Health Inc", "relevance": "direct"}
+  ],
   "policy_analysis": null,
   "analysis_report": "### 核心摘要\\n..."
 }
@@ -182,12 +237,83 @@ def _validate_entity(entity: dict) -> dict | None:
     return entity
 
 
+def _validate_symbol(sym: dict) -> dict | None:
+    """Validate a related_symbol entry. Returns None if invalid."""
+    if not isinstance(sym, dict):
+        return None
+    symbol = sym.get("symbol")
+    if not symbol or not isinstance(symbol, str) or len(symbol.strip()) < 1:
+        return None
+    market = sym.get("market", "")
+    if market not in {"us", "sh", "sz", "hk"}:
+        market = "us"
+    name = sym.get("name", "")
+    relevance = sym.get("relevance", "direct")
+    if relevance not in {"direct", "indirect"}:
+        relevance = "direct"
+    return {
+        "symbol": symbol.strip().upper(),
+        "market": market,
+        "name": str(name)[:100],
+        "relevance": relevance,
+    }
+
+
+async def _execute_tool_call(tool_call: dict) -> str:
+    """Execute a single tool call and return the result as a JSON string."""
+    func = tool_call.get("function", {})
+    name = func.get("name", "")
+    args_str = func.get("arguments", "{}")
+
+    if name != "search_stock_profiles":
+        return json.dumps({"error": f"Unknown tool: {name}"})
+
+    try:
+        args = json.loads(args_str)
+    except (json.JSONDecodeError, TypeError):
+        return json.dumps({"error": "Invalid arguments"})
+
+    query = args.get("query", "")
+    market = args.get("market")
+
+    if not query:
+        return json.dumps({"error": "query is required"})
+
+    from app.sources.api.stockpulse import search_stock_profiles
+
+    results = await search_stock_profiles(query, market=market, limit=5)
+    if not results:
+        return json.dumps({"results": [], "message": f"No profiles found for '{query}'"})
+
+    compact = [
+        {
+            "symbol": r.get("symbol", ""),
+            "market": r.get("market", ""),
+            "name": r.get("name", ""),
+            "name_zh": r.get("name_zh", ""),
+            "sector": r.get("sector", ""),
+            "industry": r.get("industry", ""),
+        }
+        for r in results
+    ]
+    return json.dumps({"results": compact}, ensure_ascii=False)
+
+
 class FinanceAnalyzerAgent(AgentDefinition):
-    """Financial analysis: sentiment + entities + sectors + report in one call."""
+    """Financial analysis: sentiment + entities + sectors + report in one call.
+
+    Supports LLM tool calls for stock profile search: the LLM can call
+    search_stock_profiles to look up ticker symbols by company name,
+    sector, or industry keyword. Results are used to populate the
+    related_symbols field in the output.
+
+    Gracefully degrades if the model doesn't support tool calls — the
+    analysis proceeds without symbol resolution.
+    """
 
     agent_id = "finance_analyzer"
     name = "金融分析"
-    description = "金融视角分析：情感、相关实体、板块、分析报告"
+    description = "金融视角分析：情感、相关实体、板块、相关股票、分析报告"
     phase = 2
     requires = ["summarizer"]
     input_fields = ["title", "full_text", "categories"]
@@ -195,6 +321,7 @@ class FinanceAnalyzerAgent(AgentDefinition):
         "sentiment_score", "sentiment_label",
         "finance_sentiment", "investment_summary",
         "financial_entities", "sectors",
+        "related_symbols",
         "analysis_report",
     ]
 
@@ -203,12 +330,8 @@ class FinanceAnalyzerAgent(AgentDefinition):
 
         from app.core.llm.types import LLMCallError
         try:
-            data, tokens = await self._cached_json_call(
-                llm, context, _TASK_PROMPT, purpose="finance_analyzer",
-            )
+            data, tokens = await self._tool_call_flow(llm, context)
         except LLMCallError:
-            # LLM-attributable failure — let safe_execute mark llm_failed and
-            # propagate to the circuit breaker.
             raise
         except Exception as e:
             logger.error(
@@ -268,6 +391,24 @@ class FinanceAnalyzerAgent(AgentDefinition):
             sectors = []
         sectors = [str(s).strip() for s in sectors if s and isinstance(s, str)][:5]
 
+        # --- Related symbols ---
+        raw_symbols = data.get("related_symbols", [])
+        if not isinstance(raw_symbols, list):
+            raw_symbols = []
+        related_symbols: list[dict] = []
+        seen_syms: set[str] = set()
+        for raw_sym in raw_symbols:
+            sym = _validate_symbol(raw_sym)
+            if sym is None:
+                continue
+            sym_key = sym["symbol"]
+            if sym_key in seen_syms:
+                continue
+            seen_syms.add(sym_key)
+            related_symbols.append(sym)
+            if len(related_symbols) >= 5:
+                break
+
         # --- Policy analysis (only for policy/politics news) ---
         policy_analysis = data.get("policy_analysis")
         if policy_analysis is not None and not isinstance(policy_analysis, dict):
@@ -290,9 +431,91 @@ class FinanceAnalyzerAgent(AgentDefinition):
                 "investment_summary": investment_summary,
                 "financial_entities": entities,
                 "sectors": sectors,
+                "related_symbols": related_symbols,
                 "policy_analysis": policy_analysis,
                 "analysis_report": report,
             },
             duration_ms=duration,
             tokens_used=tokens,
         )
+
+    async def _tool_call_flow(
+        self,
+        llm: LLMGateway,
+        context: AgentContext,
+    ) -> tuple[dict, int]:
+        """Execute the LLM call with optional tool-call rounds.
+
+        Flow:
+        1. Send analysis request with search_stock_profiles tool defined.
+        2. If LLM returns tool_calls: execute searches, send results back.
+        3. Repeat up to _MAX_TOOL_ROUNDS times.
+        4. Parse the final JSON response.
+
+        Falls back gracefully if tool calls are not supported by the model.
+        """
+        system_prompt = self._build_system_with_article(context)
+        total_tokens = 0
+
+        messages: list[ChatMessage] = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=_TASK_PROMPT),
+        ]
+
+        for round_idx in range(_MAX_TOOL_ROUNDS + 1):
+            is_last_round = round_idx == _MAX_TOOL_ROUNDS
+
+            request = ChatRequest(
+                messages=list(messages),
+                response_format={"type": "json_object"},
+                tools=None if is_last_round else [_STOCK_SEARCH_TOOL],
+            )
+
+            response: ChatResponse = await llm.chat(
+                request, purpose="finance_analyzer",
+            )
+            total_tokens += response.usage.total_tokens
+
+            # If model returned content (no tool calls), we're done
+            if not response.tool_calls or response.content:
+                content = response.content or ""
+                if not content.strip():
+                    raise ValueError(
+                        f"LLM returned empty content (finish_reason={response.finish_reason})"
+                    )
+                data = robust_json_loads(content)
+                if not isinstance(data, dict):
+                    data = {}
+                logger.info(
+                    "Finance analyzer completed for article %s: "
+                    "%d tool rounds, %d total tokens",
+                    context.article_id[:8], round_idx, total_tokens,
+                )
+                return data, total_tokens
+
+            # Model wants to use tools — execute them
+            tool_calls = response.tool_calls
+            logger.info(
+                "Finance analyzer tool call round %d for article %s: %d calls",
+                round_idx + 1, context.article_id[:8], len(tool_calls),
+            )
+
+            # Add assistant message with tool_calls
+            messages.append(ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=tool_calls,
+            ))
+
+            # Execute each tool call and add results
+            for tc in tool_calls:
+                tc_id = tc.get("id", "")
+                result_str = await _execute_tool_call(tc)
+                messages.append(ChatMessage(
+                    role="tool",
+                    content=result_str,
+                    tool_call_id=tc_id,
+                ))
+
+        # Should not reach here, but just in case
+        raise ValueError("Tool call loop exhausted without final response")
