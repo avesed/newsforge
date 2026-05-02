@@ -483,14 +483,19 @@ async def articles_by_symbol(
     consumer: ApiConsumer = Depends(verify_api_key),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get articles related to a stock symbol via finance_metadata.symbols.
+    """Get articles related to a stock symbol.
 
-    Uses jsonb_exists() instead of the `?` operator because asyncpg
-    interprets `?` as a positional parameter placeholder.
+    Checks both finance_metadata.symbols (plain string array) and
+    finance_metadata.related_symbols (object array with .symbol key).
+    Uses a lateral subquery for related_symbols to avoid asyncpg-hostile
+    operators (?, $, ::) in the SQL text.
     """
+    sym = symbol.strip().upper()
     symbol_filter = text(
-        "jsonb_exists(articles.finance_metadata->'symbols', :symbol)"
-    ).bindparams(symbol=symbol.strip().upper())
+        "(jsonb_exists(articles.finance_metadata->'symbols', :symbol) "
+        "OR EXISTS (SELECT 1 FROM jsonb_array_elements(articles.finance_metadata->'related_symbols') rs "
+        "WHERE rs->>'symbol' = :symbol2))"
+    ).bindparams(symbol=sym, symbol2=sym)
 
     query = select(Article).where(symbol_filter)
 
@@ -516,8 +521,7 @@ async def articles_feed(
 ):
     """Get a paginated feed of articles matching any of the provided symbols.
 
-    Uses jsonb_exists_any() instead of `?|` because asyncpg interprets `?`
-    as a positional parameter placeholder.
+    Checks both finance_metadata.symbols and finance_metadata.related_symbols.
     """
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
@@ -525,8 +529,13 @@ async def articles_feed(
 
     from sqlalchemy import bindparam
     symbols_filter = text(
-        "jsonb_exists_any(articles.finance_metadata->'symbols', :symbol_arr)"
-    ).bindparams(bindparam("symbol_arr", value=symbol_list, type_=ARRAY(Text)))
+        "(jsonb_exists_any(articles.finance_metadata->'symbols', :symbol_arr) "
+        "OR EXISTS (SELECT 1 FROM jsonb_array_elements(articles.finance_metadata->'related_symbols') rs "
+        "WHERE rs->>'symbol' = ANY(:symbol_arr2)))"
+    ).bindparams(
+        bindparam("symbol_arr", value=symbol_list, type_=ARRAY(Text)),
+        bindparam("symbol_arr2", value=symbol_list, type_=ARRAY(Text)),
+    )
 
     base_query = select(Article).where(symbols_filter)
 
