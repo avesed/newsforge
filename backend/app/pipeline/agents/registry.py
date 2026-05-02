@@ -85,6 +85,8 @@ class AgentRegistry:
         value_score: int,
         has_market_impact: bool,
         source_categories: list[str] | None = None,
+        *,
+        is_stockpulse: bool = False,
     ) -> dict[int, list[AgentDefinition]]:
         """Resolve which agents to run based on article classification.
 
@@ -96,7 +98,7 @@ class AgentRegistry:
 
         # Determine processing tier
         effective_score = value_score
-        if has_market_impact and market_upgrades:
+        if (has_market_impact or is_stockpulse) and market_upgrades:
             effective_score = max(effective_score, high_threshold)
 
         lightweight_threshold = self._routing_rules.get("lightweight_threshold", 15)
@@ -131,15 +133,11 @@ class AgentRegistry:
                     agent_ids.extend(agents)
 
         # --- finance_analyzer: conditional trigger ---
-        # Runs ONLY when BOTH: article is finance-categorized (feed-tagged OR
-        # LLM-classified as finance) AND has_market_impact.
-        # Drops the previous over-broad `tech/politics` LLM categories — those
-        # are the main source of noise (e.g. random political news firing FA
-        # just because a classifier listed market_impact=true).
+        # Fires when ANY of: finance-categorized, has_market_impact, StockPulse-sourced.
         if "finance_analyzer" not in agent_ids and "finance_analyzer" in self._agents:
             source_cats = set(source_categories or [])
             is_finance = ("finance" in source_cats) or ("finance" in categories)
-            if is_finance and has_market_impact:
+            if is_finance or has_market_impact or is_stockpulse:
                 agent_ids.append("finance_analyzer")
 
         return self._collect_agents(set(agent_ids))
@@ -150,6 +148,8 @@ class AgentRegistry:
         value_score: int,
         has_market_impact: bool,
         source_categories: list[str] | None = None,
+        *,
+        is_stockpulse: bool = False,
     ) -> tuple[list[str], list[str]]:
         """Resolve agents split into P1 (high priority) and P2 (low priority).
 
@@ -164,7 +164,8 @@ class AgentRegistry:
         compatible).
         """
         all_phases = self.resolve_agents(
-            categories, value_score, has_market_impact, source_categories
+            categories, value_score, has_market_impact, source_categories,
+            is_stockpulse=is_stockpulse,
         )
         if not all_phases:
             return [], []
