@@ -305,6 +305,11 @@ async def poll_stockpulse_tier(tier: str) -> None:
     # Override per-symbol limit from config
     source._per_symbol_limit = per_symbol_limit
 
+    # from_settings() only reads env vars synchronously; DB overrides
+    # (admin UI) are loaded asynchronously here so the is_configured
+    # check sees them.
+    await source._refresh_runtime_overrides()
+
     if not source.is_configured:
         logger.warning("StockPulse not configured; skipping tier=%s", tier)
         return
