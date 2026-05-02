@@ -485,12 +485,11 @@ async def articles_by_symbol(
 ):
     """Get articles related to a stock symbol via finance_metadata.symbols.
 
-    Queries the JSONB `finance_metadata->'symbols'` array using the PostgreSQL
-    `?` (contains element) operator for exact symbol matching.
+    Uses jsonb_exists() instead of the `?` operator because asyncpg
+    interprets `?` as a positional parameter placeholder.
     """
-    # Use the JSONB ? operator for exact array element matching
     symbol_filter = text(
-        "articles.finance_metadata->'symbols' ? :symbol"
+        "jsonb_exists(articles.finance_metadata->'symbols', :symbol)"
     ).bindparams(symbol=symbol.strip().upper())
 
     query = select(Article).where(symbol_filter)
@@ -517,19 +516,16 @@ async def articles_feed(
 ):
     """Get a paginated feed of articles matching any of the provided symbols.
 
-    Uses PostgreSQL JSONB `?|` (has any of) operator on finance_metadata->'symbols'.
+    Uses jsonb_exists_any() instead of `?|` because asyncpg interprets `?`
+    as a positional parameter placeholder.
     """
     symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not symbol_list:
         raise HTTPException(status_code=422, detail="At least one symbol is required")
 
-    # Base filter: finance_metadata->'symbols' has any of the provided symbols
-    # The ?| operator requires the RHS to be a PostgreSQL text[] array.
-    # Use type_coerce to cast the Python list to ARRAY(Text) so asyncpg
-    # sends the correct parameter type.
     from sqlalchemy import bindparam
     symbols_filter = text(
-        "articles.finance_metadata->'symbols' ?| :symbol_arr"
+        "jsonb_exists_any(articles.finance_metadata->'symbols', :symbol_arr)"
     ).bindparams(bindparam("symbol_arr", value=symbol_list, type_=ARRAY(Text)))
 
     base_query = select(Article).where(symbols_filter)
