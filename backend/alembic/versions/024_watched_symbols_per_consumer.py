@@ -31,6 +31,15 @@ def upgrade() -> None:
     op.execute(
         "UPDATE watched_symbols SET registered_by = '' WHERE registered_by IS NULL"
     )
+    # Deduplicate rows that now collide after NULL → '' coercion.
+    # Keep the row with the most recent last_viewed_at (or latest created_at).
+    op.execute(
+        "DELETE FROM watched_symbols w USING watched_symbols w2 "
+        "WHERE w.symbol = w2.symbol "
+        "AND w.market = w2.market "
+        "AND w.registered_by = w2.registered_by "
+        "AND w.id < w2.id"
+    )
     op.execute(
         "ALTER TABLE watched_symbols "
         "ALTER COLUMN market SET DEFAULT ''"
