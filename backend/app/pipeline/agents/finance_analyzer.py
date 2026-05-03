@@ -476,8 +476,8 @@ class FinanceAnalyzerAgent(AgentDefinition):
             )
             total_tokens += response.usage.total_tokens
 
-            # If model returned content (no tool calls), we're done
-            if not response.tool_calls or response.content:
+            # If model returned no tool calls, parse content as final JSON
+            if not response.tool_calls:
                 content = response.content or ""
                 if not content.strip():
                     raise ValueError(
