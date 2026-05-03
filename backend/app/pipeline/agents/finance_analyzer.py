@@ -500,22 +500,27 @@ class FinanceAnalyzerAgent(AgentDefinition):
                 round_idx + 1, context.article_id[:8], len(tool_calls),
             )
 
-            # Add assistant message with tool_calls
+            # Execute tool calls and inject results as plain text messages
+            # (avoids role=tool messages that some proxies fail to convert
+            # between OpenAI and Anthropic formats)
+            call_descriptions = []
+            result_parts = []
+            for tc in tool_calls:
+                func = tc.get("function", {})
+                name = func.get("name", "")
+                args_str = func.get("arguments", "{}")
+                call_descriptions.append(f"{name}({args_str})")
+                result_str = await _execute_tool_call(tc)
+                result_parts.append(f"[{name}] {result_str}")
+
             messages.append(ChatMessage(
                 role="assistant",
-                content=None,
-                tool_calls=tool_calls,
+                content=response.content or ", ".join(call_descriptions),
             ))
-
-            # Execute each tool call and add results
-            for tc in tool_calls:
-                tc_id = tc.get("id", "")
-                result_str = await _execute_tool_call(tc)
-                messages.append(ChatMessage(
-                    role="tool",
-                    content=result_str,
-                    tool_call_id=tc_id,
-                ))
+            messages.append(ChatMessage(
+                role="user",
+                content="Tool results:\n" + "\n".join(result_parts),
+            ))
 
         # Should not reach here, but just in case
         raise ValueError("Tool call loop exhausted without final response")
