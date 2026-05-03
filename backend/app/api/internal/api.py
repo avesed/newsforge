@@ -494,7 +494,7 @@ async def articles_by_symbol(
     symbol_filter = text(
         "(jsonb_exists(articles.finance_metadata->'symbols', :symbol) "
         "OR EXISTS (SELECT 1 FROM jsonb_array_elements(articles.finance_metadata->'related_symbols') rs "
-        "WHERE rs->>'symbol' = :symbol2))"
+        "WHERE rs->>'symbol' = :symbol2 AND rs->>'relevance' = 'direct'))"
     ).bindparams(symbol=sym, symbol2=sym)
 
     query = select(Article).where(symbol_filter)
@@ -531,7 +531,7 @@ async def articles_feed(
     symbols_filter = text(
         "(jsonb_exists_any(articles.finance_metadata->'symbols', :symbol_arr) "
         "OR EXISTS (SELECT 1 FROM jsonb_array_elements(articles.finance_metadata->'related_symbols') rs "
-        "WHERE rs->>'symbol' = ANY(:symbol_arr2)))"
+        "WHERE rs->>'symbol' = ANY(:symbol_arr2) AND rs->>'relevance' = 'direct'))"
     ).bindparams(
         bindparam("symbol_arr", value=symbol_list, type_=ARRAY(Text)),
         bindparam("symbol_arr2", value=symbol_list, type_=ARRAY(Text)),
