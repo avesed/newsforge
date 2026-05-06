@@ -72,6 +72,10 @@
   animation: fadeIn 150ms ease-out both;
 }
 
+.animate-fade-in {
+  animation: fadeIn 200ms ease-out both;
+}
+
 /* Stagger item animation */
 .animate-stagger-item {
   animation: fadeInUp 180ms ease-out both;

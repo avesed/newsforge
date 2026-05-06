@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useLayoutEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -114,13 +114,26 @@ export default function ArticlePage() {
   const extracted = article ? extractTitleSource(article.title) : null;
   const displaySource = extracted?.source || article?.sourceName || "";
 
+  useLayoutEffect(() => {
+    setAgentsExpanded(false);
+    setShowOriginalText(false);
+    setActiveTab("detailed");
+    setReadProgress(0);
+    setIsTabSticky(false);
+    abortRef.current?.abort();
+    setAnalysisContent("");
+    setAnalysisLoading(false);
+    setAnalysisError(null);
+    setAnalysisLoaded(false);
+    streamingRef.current = false;
+  }, [id]);
+
   useEffect(() => {
     if (article?.id) {
       void markRead(article.id);
     }
   }, [article?.id, markRead]);
 
-  // If article already has cached analysis, pre-fill
   useEffect(() => {
     if (article?.aiAnalysis) {
       setAnalysisContent(article.aiAnalysis);
@@ -308,6 +321,16 @@ export default function ArticlePage() {
       className="fixed left-0 z-[60] h-0.5 bg-primary transition-[width] duration-150"
       style={{ width: `${readProgress * 100}%`, top: "env(safe-area-inset-top, 0px)" }}
     />
+    {isMobile && isTabSticky && (
+      <button
+        onClick={goBack}
+        aria-label={t("common.back")}
+        className="fixed left-3 z-[55] flex h-9 w-9 items-center justify-center rounded-full bg-background/90 text-foreground shadow-md ring-1 ring-border/40 backdrop-blur-sm animate-fade-in"
+        style={{ top: "calc(env(safe-area-inset-top, 0px) + 3.25rem)" }}
+      >
+        <ArrowLeft className="h-4 w-4" />
+      </button>
+    )}
     <article className={cn("mx-auto", widthClass)}>
       {isMobile ? (
         <>
