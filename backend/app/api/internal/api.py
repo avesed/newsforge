@@ -10,12 +10,12 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import date, datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import ARRAY, Text, func, or_, select, text, type_coerce, update
+from sqlalchemy import ARRAY, Float, Text, func, or_, select, text, type_coerce, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
@@ -246,6 +246,109 @@ async def sentiment_batch(
         }
 
     return results
+
+
+class SentimentMlBatchRequest(CamelModel):
+    symbols: list[str]
+    market: Literal["us", "cn", "hk"] | None = None
+    start_date: date
+    end_date: date
+
+
+@router.post("/sentiment/ml-batch")
+async def sentiment_ml_batch(
+    body: SentimentMlBatchRequest,
+    consumer: ApiConsumer = Depends(verify_api_key),
+    db: AsyncSession = Depends(get_db),
+):
+    """Daily per-symbol sentiment aggregation for AlphaForge ML features.
+
+    Returns one row per (symbol, date) with sentiment_avg, article_count,
+    bullish_ratio, and content_score_avg.  AlphaForge computes rolling
+    windows (7d/30d MA, volatility) on its side.
+    """
+    from sqlalchemy import Date, bindparam, case, cast
+
+    symbol_list = [s.strip().upper() for s in body.symbols if s.strip()]
+    if not symbol_list or len(symbol_list) > 2000:
+        return {"data": []}
+
+    start_dt = datetime.combine(body.start_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_dt = datetime.combine(body.end_date, datetime.max.time(), tzinfo=timezone.utc)
+
+    if body.start_date > body.end_date:
+        raise HTTPException(status_code=422, detail="start_date must be <= end_date")
+
+    symbols_filter = text(
+        "articles.finance_metadata->'symbols' ?| :symbol_arr"
+    ).bindparams(bindparam("symbol_arr", value=symbol_list, type_=ARRAY(Text)))
+
+    symbol_col = func.jsonb_array_elements_text(
+        Article.finance_metadata["symbols"]
+    ).label("symbol")
+
+    date_col = cast(Article.published_at, Date).label("pub_date")
+
+    market_filters = [
+        symbols_filter,
+        Article.published_at >= start_dt,
+        Article.published_at <= end_dt,
+        Article.sentiment_score.is_not(None),
+    ]
+    if body.market:
+        market_filters.append(
+            Article.finance_metadata["market"].astext == body.market
+        )
+
+    cte = (
+        select(
+            symbol_col,
+            date_col,
+            Article.sentiment_score,
+            Article.finance_metadata["sentiment_tag"].astext.label("sentiment_tag"),
+            Article.value_score,
+        )
+        .where(*market_filters)
+        .cte("matched")
+    )
+
+    has_tag = case((cte.c.sentiment_tag.is_not(None), 1), else_=0)
+    bullish_case = case(
+        (cte.c.sentiment_tag == "bullish", 1),
+        else_=0,
+    )
+
+    query = (
+        select(
+            cte.c.symbol,
+            cte.c.pub_date,
+            func.avg(cte.c.sentiment_score).label("sentiment_avg"),
+            func.count().label("article_count"),
+            (
+                cast(func.sum(bullish_case), Float)
+                / func.nullif(func.sum(has_tag), 0)
+            ).label("bullish_ratio"),
+            func.avg(cte.c.value_score).label("content_score_avg"),
+        )
+        .where(cte.c.symbol.in_(symbol_list))
+        .group_by(cte.c.symbol, cte.c.pub_date)
+        .order_by(cte.c.symbol, cte.c.pub_date)
+    )
+
+    rows = (await db.execute(query)).all()
+
+    data = []
+    for row in rows:
+        data.append({
+            "symbol": row.symbol,
+            "date": str(row.pub_date),
+            "sentiment_avg": round(row.sentiment_avg, 4) if row.sentiment_avg is not None else None,
+            "article_count": row.article_count,
+            "bullish_ratio": round(row.bullish_ratio, 4) if row.bullish_ratio is not None else None,
+            "content_score_avg": round(row.content_score_avg, 1) if row.content_score_avg is not None else None,
+        })
+
+    return {"data": data}
 
 
 @router.post("/embeddings/search")
